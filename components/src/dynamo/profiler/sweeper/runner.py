@@ -1,7 +1,16 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Run the backend-neutral Sweeper with Dynamo's replay implementation."""
+"""Run the backend-neutral Sweeper with Dynamo's replay implementation.
+
+DEPRECATED (load_sweep_config, run_sweep only): duplicates search-execution
+logic moving into `aisimulate recommend --stack dynamo` (DEP #14282). Matches
+the DEP's own rejected alternative: "Separate Dynamo Sweeper CLI: duplicates
+AISimulate's public configuration and search lifecycle." _load_runner_factory
+and DynamoReplayRunnerFactory remain the reusable, non-deprecated part of
+this module -- they are the actual `--stack dynamo` implementation, just not
+yet registered as one.
+"""
 
 from __future__ import annotations
 

@@ -1,7 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Dynamo entry point for AI Simulate Sweeper and DGD generation."""
+"""Dynamo entry point for AI Simulate Sweeper and DGD generation.
+
+DEPRECATED: this standalone CLI duplicates functionality moving into
+`aisimulate recommend --output dgd` (DEP #14282,
+https://github.com/ai-dynamo/dynamo/issues/14282). The dgd output-adapter
+ABI is confirmed and shipped (aisimulate.output_adapters entry-point group,
+see dynamo.profiler.sweeper.dgd_output_adapter). This CLI remains
+functional and is not yet scheduled for removal. New integrations should
+prefer:
+
+    aisimulate recommend --stack dynamo --config input.yaml \\
+        --output dgd --set dgd.name=my-deployment
+"""
 
 from __future__ import annotations
 
