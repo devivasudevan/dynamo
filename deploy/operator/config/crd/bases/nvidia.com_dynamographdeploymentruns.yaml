@@ -136,7 +136,7 @@ spec:
                   default: {}
                   description: |-
                     Objective defines scalar optimization or a multi-objective Pareto search.
-                    When omitted, the schema supplies the default Optimize mode and SLA bounds;
+                    When omitted, the schema supplies the default Optimize mode;
                     admission supplies the conditional scalar metric.
                   properties:
                     metric:
@@ -177,9 +177,6 @@ spec:
                         - Pareto
                       type: string
                     sla:
-                      default:
-                        itlMs: 30
-                        ttftMs: 2000
                       description: |-
                         SLA defines per-request latency bounds used to calculate goodput. When omitted,
                         the schema sets a TTFT bound of 2000 ms and an ITL bound of 30 ms. An explicit
@@ -229,13 +226,7 @@ spec:
                       type: integer
                   type: object
                 workload:
-                  default:
-                    static:
-                      isl: 4000
-                      kvLoadRatio:
-                        - 0
-                        - 1
-                      osl: 1000
+                  default: {}
                   description: |-
                     Workload defines the synthetic traffic model used for every candidate evaluation.
                     When omitted, the schema searches the full KV-load ratio range at ISL 4000 and
@@ -244,6 +235,10 @@ spec:
                     overrides the fields it names.
                   properties:
                     static:
+                      default:
+                        concurrency: 10
+                        isl: 1024
+                        osl: 128
                       description: |-
                         Static defines one of AISimulate's synthetic workload shapes. Its fields are not
                         defaulted individually: the default belongs to spec.workload as a whole, so an

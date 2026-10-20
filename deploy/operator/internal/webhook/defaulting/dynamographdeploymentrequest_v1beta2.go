@@ -30,7 +30,7 @@ import (
 )
 
 // defaultMetricV1beta2 is the scalar target an Optimize objective receives when it names none.
-const defaultMetricV1beta2 = nvidiacomv1beta2.ObjectiveMetric("ThroughputPerGPU")
+const defaultMetricV1beta2 = nvidiacomv1beta2.ObjectiveMetric("Throughput")
 
 // This file defaults the v1beta2 shape of a DynamoGraphDeploymentRequest. It is separate
 // from the canonical defaulting because the v1beta1 hub carries a v1beta2 Request as an
@@ -38,8 +38,9 @@ const defaultMetricV1beta2 = nvidiacomv1beta2.ObjectiveMetric("ThroughputPerGPU"
 // handler decodes the envelope, runs this traversal and encodes the result. Names carry the
 // API version because the canonical names belong to v1beta1.
 //
-// The CRD schema owns the unconditional defaults: backends, objective.mode, objective.sla,
-// recommendation.maxCandidates and the complete workload. Admission owns what depends on
+// The CRD schema owns the unconditional defaults: backends, objective.mode,
+// recommendation.maxCandidates and workload.static as a whole (workload.static: {} opts
+// out). objective.sla has no default: an omitted SLA stays absent. Admission owns what depends on
 // other fields or on the environment: the scalar metric, the cluster hardware and the
 // AISimulate image. spec.aisimulate.parameters never changes a default. It overrides the
 // defaulted typed values later, when the input is lowered.

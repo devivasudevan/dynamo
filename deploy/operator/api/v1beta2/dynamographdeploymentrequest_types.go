@@ -113,6 +113,7 @@ type WorkloadSpec struct {
 	// defaulted individually: the default belongs to spec.workload as a whole, so an
 	// explicit workload object keeps exactly the fields it names.
 	// +optional
+	// +kubebuilder:default={isl: 1024, osl: 128, concurrency: 10}
 	Static *StaticWorkloadSpec `json:"static,omitempty"`
 }
 
@@ -179,7 +180,6 @@ type ObjectiveSpec struct {
 	// empty object disables all bounds. spec.aisimulate.parameters.goal.sla overrides
 	// the bounds it names.
 	// +optional
-	// +kubebuilder:default={ttftMs: 2000, itlMs: 30}
 	SLA *ObjectiveSLASpec `json:"sla,omitempty"`
 }
 
@@ -192,7 +192,7 @@ type AISimulateSpec struct {
 	Image string `json:"image,omitempty"`
 
 	// VersionOverride declares the AISimulate compatibility version as three numeric parts
-    // (for example 0.13.0), not a semver version: no v prefix, pre-release or build suffix. It is required
+	// (for example 0.13.0), not a semver version: no v prefix, pre-release or build suffix. It is required
 	// when the image tag is not a version and wins over a version in the tag.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
@@ -241,11 +241,11 @@ type DynamoGraphDeploymentRequestSpec struct {
 	// to spec.aisimulate.parameters.workload. spec.aisimulate.parameters.workload
 	// overrides the fields it names.
 	// +optional
-	// +kubebuilder:default={static: {isl: 4000, osl: 1000, kvLoadRatio: {0.0, 1.0}}}
+	// +kubebuilder:default={}
 	Workload *WorkloadSpec `json:"workload,omitempty"`
 
 	// Objective defines scalar optimization or a multi-objective Pareto search.
-	// When omitted, the schema supplies the default Optimize mode and SLA bounds;
+	// When omitted, the schema supplies the default Optimize mode;
 	// admission supplies the conditional scalar metric.
 	// +optional
 	// +kubebuilder:default={}

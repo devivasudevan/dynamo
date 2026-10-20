@@ -43,12 +43,12 @@ func Lower(spec *v1beta2.DynamoGraphDeploymentRequestSpec) (map[string]any, erro
 	if underlay, err = normalize(underlay); err != nil {
 		return nil, err
 	}
+	if err := applyDefaults(underlay); err != nil {
+		return nil, err
+	}
 	input, _ := mergePatch(underlay, parameters).(map[string]any)
 	if input == nil {
 		input = map[string]any{}
-	}
-	if err := applyDefaults(input, parameters); err != nil {
-		return nil, err
 	}
 	return input, nil
 }

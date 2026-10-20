@@ -30,23 +30,34 @@ import (
 func ptrTo[T any](v T) *T { return &v }
 
 // defaultedSpec is a model-only Request as it looks after the CRD's structural defaults and
-// admission: the complete workload, the SLA bounds, the metric, and discovered hardware.
+// admission: the fixed-concurrency workload, the scalar metric and discovered hardware. It
+// has no SLA bounds and no KV-load range; withSLA and withKVRange add them.
 func defaultedSpec() *v1beta2.DynamoGraphDeploymentRequestSpec {
-	metric := v1beta2.ObjectiveMetric("ThroughputPerGPU")
+	metric := v1beta2.ObjectiveMetric("Throughput")
 	return &v1beta2.DynamoGraphDeploymentRequestSpec{
 		Model:    &v1beta2.ModelSpec{Name: "meta-llama/Llama-3.1-8B-Instruct"},
 		Backends: []v1beta2.Backend{v1beta2.BackendVLLM, v1beta2.BackendSGLang, v1beta2.BackendTRTLLM},
 		Hardware: &v1beta2.HardwareSpec{GPU: &v1beta2.GPUHardwareSpec{SKU: ptrTo("h200_sxm"), Budget: ptrTo(int32(8))}},
 		Workload: &v1beta2.WorkloadSpec{Static: &v1beta2.StaticWorkloadSpec{
-			ISL: ptrTo(int32(4000)), OSL: ptrTo(int32(1000)), KVLoadRatio: v1beta2.KVLoadRatio{0, 1},
+			ISL: ptrTo(int32(1024)), OSL: ptrTo(int32(128)), Concurrency: ptrTo(int32(10)),
 		}},
-		Objective: &v1beta2.ObjectiveSpec{
-			Mode:   v1beta2.ObjectiveModeOptimize,
-			Metric: &metric,
-			SLA:    &v1beta2.ObjectiveSLASpec{TTFTMs: ptrTo(2000.0), ITLMs: ptrTo(30.0)},
-		},
+		Objective:      &v1beta2.ObjectiveSpec{Mode: v1beta2.ObjectiveModeOptimize, Metric: &metric},
 		Recommendation: &v1beta2.RecommendationSpec{MaxCandidates: 1},
 	}
+}
+
+// withSLA adds the latency bounds the earlier defaults used to supply.
+func withSLA(spec *v1beta2.DynamoGraphDeploymentRequestSpec) *v1beta2.DynamoGraphDeploymentRequestSpec {
+	spec.Objective.SLA = &v1beta2.ObjectiveSLASpec{TTFTMs: ptrTo(2000.0), ITLMs: ptrTo(30.0)}
+	return spec
+}
+
+// withKVRange replaces the fixed concurrency with a KV-load range search.
+func withKVRange(spec *v1beta2.DynamoGraphDeploymentRequestSpec) *v1beta2.DynamoGraphDeploymentRequestSpec {
+	spec.Workload.Static = &v1beta2.StaticWorkloadSpec{
+		ISL: ptrTo(int32(4000)), OSL: ptrTo(int32(1000)), KVLoadRatio: v1beta2.KVLoadRatio{0, 1},
+	}
+	return spec
 }
 
 func withParameters(spec *v1beta2.DynamoGraphDeploymentRequestSpec, parameters string) *v1beta2.DynamoGraphDeploymentRequestSpec {
@@ -91,10 +102,9 @@ func nested(t *testing.T, input map[string]any, path ...string) any {
 }
 
 func TestLowerModelOnlyRequest(t *testing.T) {
-	want := `{"goal":{"sla":{"itl_ms":30,"ttft_ms":2000},"strict_sla":true,"target":"throughput_per_gpu"},` +
+	want := `{"goal":{"target":"throughput"},` +
 		`"search_space":{"backend":["vllm","sglang","trtllm"],"gpu_budget":8,"hardware_sku":"h200_sxm","model_name":"meta-llama/Llama-3.1-8B-Instruct"},` +
-		`"sweep":{"max_trials":320},` +
-		`"workload":{"isl":4000,"kv_load_ratio":[0,1],"osl":1000,"request_count":1000}}`
+		`"workload":{"concurrency":10,"isl":1024,"osl":128,"request_count":1000}}`
 	if got := encode(t, lower(t, defaultedSpec())); got != want {
 		t.Fatalf("effective input\n got: %s\nwant: %s", got, want)
 	}
@@ -114,7 +124,7 @@ func TestLowerIsDeterministicAndDoesNotMutateTheSpec(t *testing.T) {
 
 func TestLowerExplicitRequest(t *testing.T) {
 	metric := v1beta2.ObjectiveMetric("Throughput")
-	spec := defaultedSpec()
+	spec := withSLA(defaultedSpec())
 	spec.Backends = []v1beta2.Backend{v1beta2.BackendVLLM, v1beta2.BackendSGLang}
 	spec.Workload.Static = &v1beta2.StaticWorkloadSpec{ISL: ptrTo(int32(4000)), OSL: ptrTo(int32(1000)), RequestRate: ptrTo(10.0)}
 	spec.Objective.Metric = &metric
@@ -182,7 +192,7 @@ func TestNativeValuesWinOverTheTypedUnderlay(t *testing.T) {
 		}
 	})
 	t.Run("a native SLA bound overrides only the bound it names", func(t *testing.T) {
-		input := lower(t, withParameters(defaultedSpec(), `{"goal":{"sla":{"ttft_ms":500}}}`))
+		input := lower(t, withParameters(withSLA(defaultedSpec()), `{"goal":{"sla":{"ttft_ms":500}}}`))
 		if nested(t, input, "goal", "sla", "ttft_ms") != 500.0 || nested(t, input, "goal", "sla", "itl_ms") != 30.0 {
 			t.Fatalf("unexpected SLA: %s", encode(t, input))
 		}
@@ -190,10 +200,15 @@ func TestNativeValuesWinOverTheTypedUnderlay(t *testing.T) {
 }
 
 func TestRequestCountDefault(t *testing.T) {
-	t.Run("skipped when native selects num_request_ratio", func(t *testing.T) {
-		input := lower(t, withParameters(defaultedSpec(), `{"workload":{"num_request_ratio":10}}`))
-		if nested(t, input, "workload", "request_count") != nil {
-			t.Fatalf("request_count defaulted next to num_request_ratio: %s", encode(t, input))
+	t.Run("derived from the typed underlay", func(t *testing.T) {
+		if nested(t, lower(t, defaultedSpec()), "workload", "request_count") != 1000.0 {
+			t.Fatal("request_count not derived")
+		}
+	})
+	t.Run("a native ratio deletes the derived count itself", func(t *testing.T) {
+		input := lower(t, withParameters(defaultedSpec(), `{"workload":{"num_request_ratio":10,"request_count":null}}`))
+		if nested(t, input, "workload", "request_count") != nil || nested(t, input, "workload", "num_request_ratio") != 10.0 {
+			t.Fatalf("unexpected workload: %s", encode(t, input))
 		}
 	})
 	t.Run("skipped when typed numRequestRatio is set", func(t *testing.T) {
@@ -209,12 +224,12 @@ func TestRequestCountDefault(t *testing.T) {
 			t.Fatal("request_count re-added after a native null")
 		}
 	})
-	t.Run("native deleting the ratio restores the default", func(t *testing.T) {
+	t.Run("native deleting the typed ratio does not derive a count", func(t *testing.T) {
 		spec := defaultedSpec()
 		spec.Workload.Static.NumRequestRatio = ptrTo(5.0)
 		input := lower(t, withParameters(spec, `{"workload":{"num_request_ratio":null}}`))
-		if nested(t, input, "workload", "request_count") != 1000.0 {
-			t.Fatalf("default not restored: %s", encode(t, input))
+		if nested(t, input, "workload", "request_count") != nil {
+			t.Fatalf("a count was derived after the native overlay: %s", encode(t, input))
 		}
 	})
 	t.Run("not added without a workload", func(t *testing.T) {
@@ -228,12 +243,17 @@ func TestRequestCountDefault(t *testing.T) {
 
 func TestMaxTrialsDefault(t *testing.T) {
 	t.Run("added for a KV-load range", func(t *testing.T) {
-		if nested(t, lower(t, defaultedSpec()), "sweep", "max_trials") != 320.0 {
+		if nested(t, lower(t, withKVRange(defaultedSpec())), "sweep", "max_trials") != 320.0 {
 			t.Fatal("no default max_trials for a range search")
 		}
 	})
+	t.Run("not derived for the model-only fixed concurrency", func(t *testing.T) {
+		if input := lower(t, defaultedSpec()); nested(t, input, "sweep") != nil {
+			t.Fatalf("unexpected sweep: %s", encode(t, input))
+		}
+	})
 	t.Run("not added for a pinned load", func(t *testing.T) {
-		spec := defaultedSpec()
+		spec := withKVRange(defaultedSpec())
 		spec.Workload.Static.KVLoadRatio = v1beta2.KVLoadRatio{0.5}
 		input := lower(t, spec)
 		if nested(t, input, "sweep") != nil {
@@ -244,19 +264,25 @@ func TestMaxTrialsDefault(t *testing.T) {
 		}
 	})
 	t.Run("native value or null wins", func(t *testing.T) {
-		if nested(t, lower(t, withParameters(defaultedSpec(), `{"sweep":{"max_trials":7}}`)), "sweep", "max_trials") != 7.0 {
+		if nested(t, lower(t, withParameters(withKVRange(defaultedSpec()), `{"sweep":{"max_trials":7}}`)), "sweep", "max_trials") != 7.0 {
 			t.Fatal("native max_trials ignored")
 		}
-		if nested(t, lower(t, withParameters(defaultedSpec(), `{"sweep":{"max_trials":null}}`)), "sweep", "max_trials") != nil {
+		if nested(t, lower(t, withParameters(withKVRange(defaultedSpec()), `{"sweep":{"max_trials":null}}`)), "sweep", "max_trials") != nil {
 			t.Fatal("max_trials re-added after a native null")
 		}
 	})
 }
 
 func TestStrictSLADerivation(t *testing.T) {
-	t.Run("enabled when the SLA has a bound", func(t *testing.T) {
-		if nested(t, lower(t, defaultedSpec()), "goal", "strict_sla") != true {
+	t.Run("enabled when the typed SLA has a bound", func(t *testing.T) {
+		if nested(t, lower(t, withSLA(defaultedSpec())), "goal", "strict_sla") != true {
 			t.Fatal("strict_sla not derived")
+		}
+	})
+	t.Run("model-only derives nothing", func(t *testing.T) {
+		input := lower(t, defaultedSpec())
+		if nested(t, input, "goal", "strict_sla") != nil || nested(t, input, "goal", "sla") != nil {
+			t.Fatalf("model-only input has SLA keys: %s", encode(t, input))
 		}
 	})
 	t.Run("an empty SLA derives nothing", func(t *testing.T) {
@@ -267,22 +293,48 @@ func TestStrictSLADerivation(t *testing.T) {
 			t.Fatalf("an empty SLA produced SLA keys: %s", encode(t, input))
 		}
 	})
-	t.Run("a native bound under an empty SLA still derives it", func(t *testing.T) {
-		spec := withParameters(defaultedSpec(), `{"goal":{"sla":{"ttft_ms":500}}}`)
-		spec.Objective.SLA = &v1beta2.ObjectiveSLASpec{}
-		if nested(t, lower(t, spec), "goal", "strict_sla") != true {
-			t.Fatal("strict_sla not derived from the native bound")
+	t.Run("a native bound alone does not derive it", func(t *testing.T) {
+		input := lower(t, withParameters(defaultedSpec(), `{"goal":{"sla":{"ttft_ms":500}}}`))
+		if nested(t, input, "goal", "sla", "ttft_ms") != 500.0 || nested(t, input, "goal", "strict_sla") != nil {
+			t.Fatalf("unexpected goal: %s", encode(t, input))
 		}
 	})
 	t.Run("native value is kept", func(t *testing.T) {
-		if nested(t, lower(t, withParameters(defaultedSpec(), `{"goal":{"strict_sla":false}}`)), "goal", "strict_sla") != false {
+		if nested(t, lower(t, withParameters(withSLA(defaultedSpec()), `{"goal":{"strict_sla":false}}`)), "goal", "strict_sla") != false {
 			t.Fatal("native strict_sla overridden")
 		}
 	})
-	t.Run("follows the merged SLA", func(t *testing.T) {
-		input := lower(t, withParameters(defaultedSpec(), `{"goal":{"sla":{"ttft_ms":null,"itl_ms":null}}}`))
-		if nested(t, input, "goal", "strict_sla") != nil {
-			t.Fatalf("strict_sla derived with no bounds left: %s", encode(t, input))
+	t.Run("is not revisited after the native overlay", func(t *testing.T) {
+		input := lower(t, withParameters(withSLA(defaultedSpec()), `{"goal":{"sla":{"ttft_ms":null,"itl_ms":null}}}`))
+		if nested(t, input, "goal", "strict_sla") != true {
+			t.Fatalf("the derived strict_sla changed after native bounds were deleted: %s", encode(t, input))
+		}
+	})
+}
+
+func TestParametersApplyOnceAfterDerivedDefaults(t *testing.T) {
+	t.Run("sweep null removes the complete derived sweep", func(t *testing.T) {
+		input := lower(t, withParameters(withKVRange(defaultedSpec()), `{"sweep":null}`))
+		if nested(t, input, "sweep") != nil {
+			t.Fatalf("sweep survived a native null: %s", encode(t, input))
+		}
+	})
+	t.Run("max_trials null removes only max_trials", func(t *testing.T) {
+		input := lower(t, withParameters(withKVRange(defaultedSpec()), `{"sweep":{"max_trials":null,"seed":3}}`))
+		if nested(t, input, "sweep", "max_trials") != nil || nested(t, input, "sweep", "seed") != 3.0 {
+			t.Fatalf("unexpected sweep: %s", encode(t, input))
+		}
+	})
+	t.Run("a native max_trials replaces the derived value", func(t *testing.T) {
+		input := lower(t, withParameters(withKVRange(defaultedSpec()), `{"sweep":{"max_trials":7}}`))
+		if nested(t, input, "sweep", "max_trials") != 7.0 {
+			t.Fatalf("unexpected sweep: %s", encode(t, input))
+		}
+	})
+	t.Run("nothing is derived from values only parameters introduce", func(t *testing.T) {
+		input := lower(t, withParameters(defaultedSpec(), `{"workload":{"kv_load_ratio":[0,1]},"goal":{"sla":{"ttft_ms":500}}}`))
+		if nested(t, input, "sweep") != nil || nested(t, input, "goal", "strict_sla") != nil {
+			t.Fatalf("a field was derived from native-only values: %s", encode(t, input))
 		}
 	})
 }
