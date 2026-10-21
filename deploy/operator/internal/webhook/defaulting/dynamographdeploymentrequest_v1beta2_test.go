@@ -41,11 +41,10 @@ func v1beta2SchemaDefaulted() *nvidiacomv1beta2.DynamoGraphDeploymentRequestSpec
 		Model:    &nvidiacomv1beta2.ModelSpec{Name: "meta-llama/Llama-3.1-8B-Instruct"},
 		Backends: []nvidiacomv1beta2.Backend{nvidiacomv1beta2.BackendVLLM, nvidiacomv1beta2.BackendSGLang, nvidiacomv1beta2.BackendTRTLLM},
 		Workload: &nvidiacomv1beta2.WorkloadSpec{Static: &nvidiacomv1beta2.StaticWorkloadSpec{
-			ISL: v1beta2Ptr(int32(4000)), OSL: v1beta2Ptr(int32(1000)), KVLoadRatio: nvidiacomv1beta2.KVLoadRatio{0, 1},
+			ISL: v1beta2Ptr(int32(1024)), OSL: v1beta2Ptr(int32(128)), Concurrency: v1beta2Ptr(int32(10)),
 		}},
 		Objective: &nvidiacomv1beta2.ObjectiveSpec{
 			Mode: nvidiacomv1beta2.ObjectiveModeOptimize,
-			SLA:  &nvidiacomv1beta2.ObjectiveSLASpec{TTFTMs: v1beta2Ptr(2000.0), ITLMs: v1beta2Ptr(30.0)},
 		},
 		Recommendation: &nvidiacomv1beta2.RecommendationSpec{MaxCandidates: 1},
 	}
@@ -66,7 +65,7 @@ func TestDefaultSpecV1beta2ModelOnlyRequest(t *testing.T) {
 		hardware:        hardwareDefaultsV1beta2{sku: "h200_sxm", budget: 8},
 		aisimulateImage: "registry.example.com/aisimulate:1.2.0",
 	})
-	if got := ptrDeref(spec.Objective.Metric); got != "ThroughputPerGPU" {
+	if got := ptrDeref(spec.Objective.Metric); got != "Throughput" {
 		t.Fatalf("metric = %q", got)
 	}
 	gpu := spec.Hardware.GPU
@@ -202,7 +201,7 @@ func TestDefaultObjectiveSpecV1beta2(t *testing.T) {
 		objective nvidiacomv1beta2.ObjectiveSpec
 		want      nvidiacomv1beta2.ObjectiveMetric
 	}{
-		{"optimize without a metric", nvidiacomv1beta2.ObjectiveSpec{Mode: nvidiacomv1beta2.ObjectiveModeOptimize}, "ThroughputPerGPU"},
+		{"optimize without a metric", nvidiacomv1beta2.ObjectiveSpec{Mode: nvidiacomv1beta2.ObjectiveModeOptimize}, "Throughput"},
 		{"an explicit metric is kept", nvidiacomv1beta2.ObjectiveSpec{Mode: nvidiacomv1beta2.ObjectiveModeOptimize, Metric: v1beta2Ptr(nvidiacomv1beta2.ObjectiveMetric("TTFT"))}, "TTFT"},
 		{"pareto has no scalar metric", nvidiacomv1beta2.ObjectiveSpec{Mode: nvidiacomv1beta2.ObjectiveModePareto, Metrics: []nvidiacomv1beta2.ObjectiveMetric{"TTFT", "Throughput"}}, ""},
 		{"an absent mode is left to the schema", nvidiacomv1beta2.ObjectiveSpec{}, ""},
@@ -234,7 +233,7 @@ func TestNativeTargetOverridesTheDefaultedMetric(t *testing.T) {
 	spec := v1beta2SchemaDefaulted()
 	spec.AISimulate = &nvidiacomv1beta2.AISimulateSpec{Parameters: &runtime.RawExtension{Raw: []byte(`{"goal":{"target":"ttft"}}`)}}
 	defaultDynamoGraphDeploymentRequestSpecV1beta2(spec, dynamoGraphDeploymentRequestV1beta2DefaultOptions{})
-	if *spec.Objective.Metric != "ThroughputPerGPU" {
+	if *spec.Objective.Metric != "Throughput" {
 		t.Fatalf("the typed metric must be defaulted regardless of the parameters, got %q", *spec.Objective.Metric)
 	}
 	input, err := aisimulate.Lower(spec)
