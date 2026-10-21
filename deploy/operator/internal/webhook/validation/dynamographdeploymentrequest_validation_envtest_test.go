@@ -558,30 +558,43 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 			},
 		},
 		{
-			name: "v1beta2 empty workload is an opt-out and stays empty",
+			name: "v1beta2 empty workload receives the static model-only default",
 			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
 				spec["workload"] = map[string]any{}
 			}, nil),
 			gpuDiscovery: true,
 			discovered:   discoveredH200,
 			check: func(t *testing.T, result *unstructured.Unstructured) {
-				v1beta2Empty(t, result, "spec", "workload")
-				v1beta2Absent(t, result, "spec", "workload", "static")
+				for key, want := range map[string]float64{"isl": 1024, "osl": 128, "concurrency": 10} {
+					if got := v1beta2Number(t, result, "spec", "workload", "static", key); got != want {
+						t.Fatalf("workload.static.%s = %v, want %v", key, got, want)
+					}
+				}
+				v1beta2Absent(t, result, "spec", "workload", "static", "kvLoadRatio")
 			},
 		},
 		{
-			name: "v1beta2 empty workload stays empty beside native parameters",
+			name: "v1beta2 empty workload static is an opt-out and stays empty",
 			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
-				spec["workload"] = map[string]any{}
+				spec["workload"] = map[string]any{"static": map[string]any{}}
+			}, nil),
+			gpuDiscovery: true,
+			discovered:   discoveredH200,
+			check: func(t *testing.T, result *unstructured.Unstructured) {
+				v1beta2Empty(t, result, "spec", "workload", "static")
+			},
+		},
+		{
+			name: "v1beta2 empty workload static stays empty beside native parameters",
+			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
+				spec["workload"] = map[string]any{"static": map[string]any{}}
 				spec["aisimulate"] = map[string]any{"parameters": mustJSONObject(t, `{"workload":{"isl":512,"osl":128,"concurrency":8,"request_count":100}}`)}
 			}, nil),
 			gpuDiscovery: true,
 			discovered:   discoveredH200,
 			check: func(t *testing.T, result *unstructured.Unstructured) {
-				v1beta2Empty(t, result, "spec", "workload")
-				if got := v1beta2Number(t, result, "spec", "objective", "sla", "ttftMs"); got != 2000 {
-					t.Fatalf("objective.sla.ttftMs = %v, want the schema default 2000", got)
-				}
+				v1beta2Empty(t, result, "spec", "workload", "static")
+				v1beta2Absent(t, result, "spec", "objective", "sla")
 				expectV1beta2AdmissionDefaults(t, result)
 			},
 		},
@@ -594,8 +607,8 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 			discovered:   discoveredH200,
 			check: func(t *testing.T, result *unstructured.Unstructured) {
 				v1beta2Empty(t, result, "spec", "objective", "sla")
-				if got := v1beta2Number(t, result, "spec", "workload", "static", "isl"); got != 4000 {
-					t.Fatalf("workload.static.isl = %v, want the schema default 4000", got)
+				if got := v1beta2Number(t, result, "spec", "workload", "static", "isl"); got != 1024 {
+					t.Fatalf("workload.static.isl = %v, want the schema default 1024", got)
 				}
 			},
 		},
@@ -607,8 +620,8 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 			gpuDiscovery: true,
 			discovered:   discoveredH200,
 			check: func(t *testing.T, result *unstructured.Unstructured) {
-				if got := v1beta2Number(t, result, "spec", "workload", "static", "isl"); got != 4000 {
-					t.Fatalf("typed workload.static.isl = %v, want 4000", got)
+				if got := v1beta2Number(t, result, "spec", "workload", "static", "isl"); got != 1024 {
+					t.Fatalf("typed workload.static.isl = %v, want 1024", got)
 				}
 				if got := v1beta2Number(t, result, "spec", "aisimulate", "parameters", "workload", "isl"); got != 256 {
 					t.Fatalf("parameters.workload.isl = %v, want 256", got)
@@ -920,23 +933,13 @@ func v1beta2Empty(t *testing.T, obj *unstructured.Unstructured, path ...string) 
 // expectV1beta2SchemaDefaults checks what the CRD supplies when workload and sla are omitted.
 func expectV1beta2SchemaDefaults(t *testing.T, obj *unstructured.Unstructured) {
 	t.Helper()
-	if got := v1beta2Number(t, obj, "spec", "workload", "static", "isl"); got != 4000 {
-		t.Fatalf("workload.static.isl = %v, want 4000", got)
+	for key, want := range map[string]float64{"isl": 1024, "osl": 128, "concurrency": 10} {
+		if got := v1beta2Number(t, obj, "spec", "workload", "static", key); got != want {
+			t.Fatalf("workload.static.%s = %v, want %v", key, got, want)
+		}
 	}
-	if got := v1beta2Number(t, obj, "spec", "workload", "static", "osl"); got != 1000 {
-		t.Fatalf("workload.static.osl = %v, want 1000", got)
-	}
-	ratio, found := v1beta2Field(t, obj, "spec", "workload", "static", "kvLoadRatio")
-	list, ok := ratio.([]any)
-	if !found || !ok || len(list) != 2 {
-		t.Fatalf("workload.static.kvLoadRatio = %#v, want [0, 1]", ratio)
-	}
-	if got := v1beta2Number(t, obj, "spec", "objective", "sla", "ttftMs"); got != 2000 {
-		t.Fatalf("objective.sla.ttftMs = %v, want 2000", got)
-	}
-	if got := v1beta2Number(t, obj, "spec", "objective", "sla", "itlMs"); got != 30 {
-		t.Fatalf("objective.sla.itlMs = %v, want 30", got)
-	}
+	v1beta2Absent(t, obj, "spec", "workload", "static", "kvLoadRatio")
+	v1beta2Absent(t, obj, "spec", "objective", "sla")
 	if got := v1beta2String(t, obj, "spec", "objective", "mode"); got != "Optimize" {
 		t.Fatalf("objective.mode = %q, want Optimize", got)
 	}
@@ -945,8 +948,8 @@ func expectV1beta2SchemaDefaults(t *testing.T, obj *unstructured.Unstructured) {
 // expectV1beta2AdmissionDefaults checks what admission supplies from the environment.
 func expectV1beta2AdmissionDefaults(t *testing.T, obj *unstructured.Unstructured) {
 	t.Helper()
-	if got := v1beta2String(t, obj, "spec", "objective", "metric"); got != "ThroughputPerGPU" {
-		t.Fatalf("objective.metric = %q, want ThroughputPerGPU", got)
+	if got := v1beta2String(t, obj, "spec", "objective", "metric"); got != "Throughput" {
+		t.Fatalf("objective.metric = %q, want Throughput", got)
 	}
 	if got := v1beta2String(t, obj, "spec", "aisimulate", "image"); got != admissionAISimulateImage {
 		t.Fatalf("aisimulate.image = %q, want %q", got, admissionAISimulateImage)
