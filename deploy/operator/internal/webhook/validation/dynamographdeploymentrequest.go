@@ -89,6 +89,11 @@ func (v *dynamoGraphDeploymentRequestValidation) validateDynamoGraphDeploymentRe
 	spec *nvidiacomv1beta1.DynamoGraphDeploymentRequestSpec,
 	fldPath *field.Path,
 ) field.ErrorList {
+	// The requested API version decides what spec.v1beta2 means. A native request is
+	// validated; a spec that only conversion may produce is rejected on CREATE.
+	if !v.requestIsNative(spec.V1Beta2 != nil) {
+		return foreignCreateErrors(fldPath, spec.V1Beta2 != nil)
+	}
 	// A v1beta2 Request reaches this webhook as a v1beta1 object carrying spec.v1beta2;
 	// the v1beta1 rules below do not apply to it.
 	if spec.V1Beta2 != nil {
@@ -247,7 +252,15 @@ func (v *dynamoGraphDeploymentRequestValidation) validateDynamoGraphDeploymentRe
 	fldPath *field.Path,
 	oldPhase nvidiacomv1beta1.DGDRPhase,
 ) field.ErrorList {
-	// A v1beta2 spec is unconstrained by phase: an unchanged spec is always allowed, so
+	// A spec viewed through the API version that does not own it is read-only: an unchanged
+	// spec round-trips, any other write is rejected.
+	if !v.requestIsNative(newSpec.V1Beta2 != nil) {
+		if apiequality.Semantic.DeepEqual(newSpec, oldSpec) {
+			return nil
+		}
+		return foreignUpdateErrors(fldPath, newSpec.V1Beta2 != nil)
+	}
+	// A native v1beta2 spec is unconstrained by phase: an unchanged spec is always allowed, so
 	// status-preserving writes and defaulting-only updates pass, and any change is fully
 	// validated as if it were new.
 	if newSpec.V1Beta2 != nil {
