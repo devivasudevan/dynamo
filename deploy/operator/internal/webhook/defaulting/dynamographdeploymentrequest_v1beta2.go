@@ -32,6 +32,18 @@ import (
 // defaultMetricV1beta2 is the scalar target an Optimize objective receives when it names none.
 const defaultMetricV1beta2 = nvidiacomv1beta2.ObjectiveMetric("Throughput")
 
+// Nested defaults of the parents admission creates. They must equal the +kubebuilder:default
+// markers in api/v1beta2: the API server defaults a mutated object in the webhook's version
+// (v1beta1, whose v1beta2 carrier is opaque), so the v1beta2 schema never fills them in.
+const (
+	defaultStaticISLV1beta2         int32 = 1024
+	defaultStaticOSLV1beta2         int32 = 128
+	defaultStaticConcurrencyV1beta2 int32 = 10
+	defaultMaxCandidatesV1beta2     int32 = 1
+)
+
+func defaultPtrV1beta2[T any](v T) *T { return &v }
+
 // This file defaults the v1beta2 shape of a DynamoGraphDeploymentRequest. It is separate
 // from the canonical defaulting because the v1beta1 hub carries a v1beta2 Request as an
 // opaque spec.v1beta2 envelope: conversion cannot apply field-level defaults to it, so the
@@ -101,6 +113,28 @@ func defaultDynamoGraphDeploymentRequestSpecV1beta2(
 	spec *nvidiacomv1beta2.DynamoGraphDeploymentRequestSpec,
 	opts dynamoGraphDeploymentRequestV1beta2DefaultOptions,
 ) {
+	// Structural defaults live here, not in the CRD schema: a schema default would also be
+	// applied to an object carrying spec.v1beta1 and put native fields next to the carrier,
+	// which conversion rejects. This function only runs for native requests. Explicit values,
+	// including empty objects, are kept. A parent the client sent already received its nested
+	// schema defaults at decode; a parent created here gets them explicitly.
+	if spec.Backends == nil {
+		spec.Backends = []nvidiacomv1beta2.Backend{"vllm", "sglang", "trtllm"}
+	}
+	if spec.Workload == nil {
+		spec.Workload = &nvidiacomv1beta2.WorkloadSpec{Static: &nvidiacomv1beta2.StaticWorkloadSpec{
+			ISL:         defaultPtrV1beta2(defaultStaticISLV1beta2),
+			OSL:         defaultPtrV1beta2(defaultStaticOSLV1beta2),
+			Concurrency: defaultPtrV1beta2(defaultStaticConcurrencyV1beta2),
+		}}
+	}
+	if spec.Objective == nil {
+		spec.Objective = &nvidiacomv1beta2.ObjectiveSpec{Mode: nvidiacomv1beta2.ObjectiveModeOptimize}
+	}
+	if spec.Recommendation == nil {
+		spec.Recommendation = &nvidiacomv1beta2.RecommendationSpec{MaxCandidates: defaultMaxCandidatesV1beta2}
+	}
+
 	if spec.Hardware == nil && !opts.hardware.empty() {
 		spec.Hardware = &nvidiacomv1beta2.HardwareSpec{}
 	}
@@ -149,7 +183,7 @@ func defaultGPUHardwareSpecV1beta2(gpu *nvidiacomv1beta2.GPUHardwareSpec, defaul
 // spec.aisimulate.parameters overrides the completed typed value when the input is lowered,
 // so it never suppresses this default.
 func defaultObjectiveSpecV1beta2(objective *nvidiacomv1beta2.ObjectiveSpec) {
-	if objective.Mode == nvidiacomv1beta2.ObjectiveModeOptimize && objective.Metric == nil {
+	if (objective.Mode == "" || objective.Mode == nvidiacomv1beta2.ObjectiveModeOptimize) && objective.Metric == nil {
 		metric := defaultMetricV1beta2
 		objective.Metric = &metric
 	}

@@ -176,10 +176,8 @@ type ObjectiveSpec struct {
 	// +listType=set
 	Metrics []ObjectiveMetric `json:"metrics,omitempty"`
 
-	// SLA defines per-request latency bounds used to calculate goodput. When omitted,
-	// the schema sets a TTFT bound of 2000 ms and an ITL bound of 30 ms. An explicit
-	// empty object disables all bounds. spec.aisimulate.parameters.goal.sla overrides
-	// the bounds it names.
+	// SLA defines per-request latency bounds used to calculate goodput. When omitted, no
+	// bounds apply. spec.aisimulate.parameters.goal.sla overrides the bounds it names.
 	// +optional
 	SLA *ObjectiveSLASpec `json:"sla,omitempty"`
 }
@@ -230,7 +228,6 @@ type NativeSearchInput struct {
 	// Backends lists one or more inference backends searched by AISimulate and used by generated candidates.
 	// +optional
 	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:default={vllm,sglang,trtllm}
 	Backends []Backend `json:"backends,omitempty"`
 
 	// Hardware bounds the accelerator configurations evaluated by the search.
@@ -239,19 +236,18 @@ type NativeSearchInput struct {
 	Hardware *HardwareSpec `json:"hardware,omitempty"`
 
 	// Workload defines the synthetic traffic model used for every candidate evaluation.
-	// When omitted, the schema searches the full KV-load ratio range at ISL 4000 and
-	// OSL 1000. An explicit empty object opts out of that default, leaving the workload
-	// to spec.aisimulate.parameters.workload. spec.aisimulate.parameters.workload
-	// overrides the fields it names.
+	// When omitted, admission supplies a static shape of ISL 1024, OSL 128 and concurrency 10;
+	// an explicit empty workload receives the same shape from the schema. An explicit
+	// workload.static: {} opts out of that shape, leaving the workload to
+	// spec.aisimulate.parameters.workload. spec.aisimulate.parameters.workload overrides the
+	// fields it names.
 	// +optional
-	// +kubebuilder:default={}
 	Workload *WorkloadSpec `json:"workload,omitempty"`
 
 	// Objective defines scalar optimization or a multi-objective Pareto search.
-	// When omitted, the schema supplies the default Optimize mode;
-	// admission supplies the conditional scalar metric.
+	// When omitted, admission supplies the object. Its mode defaults to Optimize, and admission
+	// supplies the conditional scalar metric.
 	// +optional
-	// +kubebuilder:default={}
 	Objective *ObjectiveSpec `json:"objective,omitempty"`
 
 	// AISimulate selects the execution artifact and supplies native AISimulate input.
@@ -260,7 +256,6 @@ type NativeSearchInput struct {
 
 	// Recommendation controls bounded projection into DGDC resources.
 	// +optional
-	// +kubebuilder:default={}
 	Recommendation *RecommendationSpec `json:"recommendation,omitempty"`
 }
 

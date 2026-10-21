@@ -874,7 +874,14 @@ func TestDynamoGraphDeploymentRequestStatusRepresentationMatchesSpec(t *testing.
 			warnings := &warningRecorder{}
 			resourceClient := newAdmissionResourceClient(t, env, test.object, "", warnings)
 			object, _ := admissionObject(t, test.object, env.Namespace(), nil)
-			created, err := resourceClient.Create(t.Context(), object, metav1.CreateOptions{})
+			createClient := resourceClient
+			if hasForeignCarrier(object) {
+				// Only conversion may write a foreign carrier, and admission rejects clients that
+				// do. Seed the shape conversion would have stored; the status update below still
+				// goes through admission.
+				createClient = newAdmissionResourceClient(t, env, test.object, legacySeedUsername, warnings)
+			}
+			created, err := createClient.Create(t.Context(), object, metav1.CreateOptions{})
 			if err != nil {
 				t.Fatalf("create request: %v", err)
 			}
@@ -1140,4 +1147,14 @@ func expectV1beta2AdmissionDefaults(t *testing.T, obj *unstructured.Unstructured
 	if got := v1beta2Number(t, obj, "spec", "hardware", "gpu", "budget"); got != 8 {
 		t.Fatalf("hardware.gpu.budget = %v, want 8", got)
 	}
+}
+
+// hasForeignCarrier reports whether the object holds the opposite version's representation.
+func hasForeignCarrier(object *unstructured.Unstructured) bool {
+	for _, key := range []string{"v1beta1", "v1beta2"} {
+		if _, found, _ := unstructured.NestedFieldNoCopy(object.Object, "spec", key); found {
+			return true
+		}
+	}
+	return false
 }
