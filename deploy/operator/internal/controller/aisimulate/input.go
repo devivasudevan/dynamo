@@ -27,12 +27,12 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-// Lower returns the effective native input: the typed underlay, merged with
-// spec.aisimulate.parameters, plus the derived defaults. The spec must already carry its
-// structural defaults; lowering repeats none of them. The only error is malformed
-// parameters (not a JSON object); semantic problems are the caller's to validate.
-func Lower(spec *v1beta2.DynamoGraphDeploymentRequestSpec) (map[string]any, error) {
-	parameters, err := Parameters(spec)
+// Lower returns the effective native input: the typed underlay and derived defaults, merged
+// with spec.aisimulate.inputOverrides. The spec must already carry its structural defaults;
+// lowering repeats none of them. The only error is malformed inputOverrides (not a JSON
+// object); semantic problems are the caller's to validate.
+func Lower(spec *v1beta2.NativeSearchInput) (map[string]any, error) {
+	overrides, err := InputOverrides(spec)
 	if err != nil {
 		return nil, err
 	}
@@ -46,23 +46,23 @@ func Lower(spec *v1beta2.DynamoGraphDeploymentRequestSpec) (map[string]any, erro
 	if err := applyDefaults(underlay); err != nil {
 		return nil, err
 	}
-	input, _ := mergePatch(underlay, parameters).(map[string]any)
+	input, _ := mergePatch(underlay, overrides).(map[string]any)
 	if input == nil {
 		input = map[string]any{}
 	}
 	return input, nil
 }
 
-// Parameters returns spec.aisimulate.parameters as a JSON object, or nil when absent.
-func Parameters(spec *v1beta2.DynamoGraphDeploymentRequestSpec) (map[string]any, error) {
-	if spec.AISimulate == nil || spec.AISimulate.Parameters == nil {
+// InputOverrides returns spec.aisimulate.inputOverrides as a JSON object, or nil when absent.
+func InputOverrides(spec *v1beta2.NativeSearchInput) (map[string]any, error) {
+	if spec.AISimulate == nil || spec.AISimulate.InputOverrides == nil {
 		return nil, nil
 	}
-	raw := spec.AISimulate.Parameters.Raw
-	if len(raw) == 0 && spec.AISimulate.Parameters.Object != nil {
+	raw := spec.AISimulate.InputOverrides.Raw
+	if len(raw) == 0 && spec.AISimulate.InputOverrides.Object != nil {
 		var err error
-		if raw, err = json.Marshal(spec.AISimulate.Parameters.Object); err != nil {
-			return nil, fmt.Errorf("spec.aisimulate.parameters: %w", err)
+		if raw, err = json.Marshal(spec.AISimulate.InputOverrides.Object); err != nil {
+			return nil, fmt.Errorf("spec.aisimulate.inputOverrides: %w", err)
 		}
 	}
 	if len(raw) == 0 {
@@ -70,7 +70,7 @@ func Parameters(spec *v1beta2.DynamoGraphDeploymentRequestSpec) (map[string]any,
 	}
 	var value any
 	if err := json.Unmarshal(raw, &value); err != nil {
-		return nil, fmt.Errorf("spec.aisimulate.parameters: %w", err)
+		return nil, fmt.Errorf("spec.aisimulate.inputOverrides: %w", err)
 	}
 	switch typed := value.(type) {
 	case nil:
@@ -78,13 +78,13 @@ func Parameters(spec *v1beta2.DynamoGraphDeploymentRequestSpec) (map[string]any,
 	case map[string]any:
 		return typed, nil
 	default:
-		return nil, fmt.Errorf("spec.aisimulate.parameters: must be a JSON object, got %T", value)
+		return nil, fmt.Errorf("spec.aisimulate.inputOverrides: must be a JSON object, got %T", value)
 	}
 }
 
 // Underlay translates the typed spec into native input. Typed fields that are unset
-// produce no key, so the native defaults and the parameters decide them.
-func Underlay(spec *v1beta2.DynamoGraphDeploymentRequestSpec) (map[string]any, error) {
+// produce no key, so the native defaults and input overrides decide them.
+func Underlay(spec *v1beta2.NativeSearchInput) (map[string]any, error) {
 	b := builder{root: map[string]any{}}
 
 	if spec.Model != nil {
@@ -215,7 +215,7 @@ func nativeMetrics(metrics []v1beta2.ObjectiveMetric) []string {
 }
 
 // normalize round-trips through JSON so every number is a float64, the type the
-// parameters decode to. Merge and validation then see one representation.
+// input overrides decode to. Merge and validation then see one representation.
 func normalize(value map[string]any) (map[string]any, error) {
 	raw, err := json.Marshal(value)
 	if err != nil {
