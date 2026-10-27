@@ -181,7 +181,7 @@ func (r *DynamoGraphDeploymentRequestV1beta2Reconciler) Reconcile(
 		request.Status.ActiveRunRef = &corev1.LocalObjectReference{Name: active.Name}
 	}
 	request.Status.RecentRunRefs = nil
-	for i := 0; i < keep; i++ {
+	for i := range keep {
 		request.Status.RecentRunRefs = append(request.Status.RecentRunRefs, corev1.LocalObjectReference{Name: terminal[i].Name})
 	}
 	meta.SetStatusCondition(&request.Status.Conditions, condition)
@@ -236,12 +236,10 @@ func (r *DynamoGraphDeploymentRequestV1beta2Reconciler) buildRun(
 		Parameters:      &runtime.RawExtension{Raw: raw},
 	}
 	run := &nvidiacomv1beta2.DynamoGraphDeploymentRun{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        dgdrV1beta2RunName(request),
-			Namespace:   request.Namespace,
-			Annotations: map[string]string{dgdrV1beta2GenerationAnnotation: strconv.FormatInt(request.Generation, 10)},
-		},
-		Spec: nvidiacomv1beta2.DynamoGraphDeploymentRunSpec{NativeSearchInput: *frozen},
+		Name:        dgdrV1beta2RunName(request),
+		Namespace:   request.Namespace,
+		Annotations: map[string]string{dgdrV1beta2GenerationAnnotation: strconv.FormatInt(request.Generation, 10)},
+		Spec:        nvidiacomv1beta2.DynamoGraphDeploymentRunSpec{NativeSearchInput: *frozen},
 	}
 	if err := controllerutil.SetControllerReference(request, run, r.Scheme()); err != nil {
 		return nil, fmt.Errorf("set Run owner: %w", err)
