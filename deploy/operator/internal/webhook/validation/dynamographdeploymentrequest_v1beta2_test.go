@@ -146,17 +146,18 @@ func v1beta2Envelope(raw string) *apiextensionsv1.JSON {
 
 func TestValidateEnvelopeV1beta2(t *testing.T) {
 	path := field.NewPath("spec", "v1beta2")
+	validation := &dynamoGraphDeploymentRequestValidation{}
 
 	good, err := json.Marshal(v1beta2DefaultedSpec())
 	if err != nil {
 		t.Fatal(err)
 	}
-	v1beta2RequireNoError(t, validateDynamoGraphDeploymentRequestEnvelopeV1beta2(v1beta2Envelope(string(good)), path))
+	v1beta2RequireNoError(t, validation.validateDynamoGraphDeploymentRequestEnvelopeV1beta2(v1beta2Envelope(string(good)), path))
 
 	bad := v1beta2DefaultedSpec()
 	bad.AISimulate = nil
 	raw, _ := json.Marshal(bad)
-	v1beta2RequireError(t, validateDynamoGraphDeploymentRequestEnvelopeV1beta2(v1beta2Envelope(string(raw)), path), "aisimulate")
+	v1beta2RequireError(t, validation.validateDynamoGraphDeploymentRequestEnvelopeV1beta2(v1beta2Envelope(string(raw)), path), "aisimulate")
 
-	v1beta2RequireError(t, validateDynamoGraphDeploymentRequestEnvelopeV1beta2(v1beta2Envelope(`{"model": 3}`), path), "spec.v1beta2: must be a valid v1beta2 spec")
+	v1beta2RequireError(t, validation.validateDynamoGraphDeploymentRequestEnvelopeV1beta2(v1beta2Envelope(`{"model": 3}`), path), "spec.v1beta2: must be a valid v1beta2 spec")
 }

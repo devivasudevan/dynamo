@@ -29,6 +29,7 @@ import (
 
 	nvidiacomv1beta1 "github.com/ai-dynamo/dynamo/deploy/operator/api/v1beta1"
 	nvidiacomv1beta2 "github.com/ai-dynamo/dynamo/deploy/operator/api/v1beta2"
+	"github.com/ai-dynamo/dynamo/deploy/operator/internal/aisimulate"
 	"github.com/ai-dynamo/dynamo/deploy/operator/internal/gpu"
 	admissionv1 "k8s.io/api/admission/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -92,8 +93,10 @@ func (o DGDRV1beta2Options) resolveDefaults(
 	}, nil
 }
 
-// resolveHardware returns the SKU and budget the typed spec omits. It asks the cluster only
-// when something is missing, restricted to the typed SKU when there is one.
+// resolveHardware returns the SKU and budget the typed spec omits. A complete explicit pair is
+// authoritative and bypasses discovery. When only a known SKU is present, discovery is restricted
+// to it. An SKU outside the bundled AISimulate catalog remains an authoritative override only
+// when its budget is explicit, because discovery cannot associate cluster capacity with it.
 //
 // Discovery runs on CREATE and on an UPDATE that changes spec.hardware. A Request stays
 // mutable and every Run snapshots it, so a caller may change or remove typed hardware before
@@ -129,6 +132,12 @@ func (o DGDRV1beta2Options) resolveHardware(
 	if sku != "" && hasBudget {
 		return hardwareDefaultsV1beta2{}, nil
 	}
+	if sku != "" && !aisimulate.IsKnownHardwareSKU(sku) {
+		return hardwareDefaultsV1beta2{}, rejectHardwareV1beta2(field.Required(
+			field.NewPath("spec", "hardware", "gpu", "budget"),
+			fmt.Sprintf("cannot discover a GPU budget for SKU %q because it is not known to the bundled AISimulate catalog; set spec.hardware.gpu.budget explicitly", sku),
+		))
+	}
 
 	timeout := o.HardwareDiscoveryTimeout
 	if timeout <= 0 {
@@ -140,6 +149,12 @@ func (o DGDRV1beta2Options) resolveHardware(
 	gpuPath := field.NewPath("spec", "hardware", "gpu")
 	found, err := o.Hardware.Discover(ctx, nvidiacomv1beta1.GPUSKUType(sku))
 	if err != nil {
+		if sku != "" {
+			return hardwareDefaultsV1beta2{}, rejectHardwareV1beta2(field.Required(
+				gpuPath.Child("budget"),
+				fmt.Sprintf("could not be discovered for SKU %q (%v); set spec.hardware.gpu.budget", sku, err),
+			))
+		}
 		return hardwareDefaultsV1beta2{}, rejectHardwareV1beta2(field.Required(gpuPath, fmt.Sprintf(
 			"the cluster's GPUs could not be discovered (%v); set spec.hardware.gpu.sku and spec.hardware.gpu.budget", err)))
 	}
@@ -154,7 +169,7 @@ func (o DGDRV1beta2Options) resolveHardware(
 				strings.Join(append([]string{found.Model}, found.OtherModels...), ", "))))
 		}
 		sku = string(gpu.KnownSKU(found))
-		if sku == "" {
+		if sku == "" || !aisimulate.IsKnownHardwareSKU(sku) {
 			detail := "the cluster's GPUs map to no AISimulate SKU; set spec.hardware.gpu.sku"
 			if found != nil && found.Model != "" {
 				detail = fmt.Sprintf("the cluster's GPU model %q maps to no AISimulate SKU; set spec.hardware.gpu.sku", found.Model)

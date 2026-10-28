@@ -120,6 +120,16 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 			request: beta2DGDRForAdmission(setBeta2AdmissionHardware),
 		},
 		{
+			name: "v1beta2 unknown explicit SKU is preserved with a warning",
+			request: beta2DGDRForAdmission(func(request *nvidiacomv1beta2.DynamoGraphDeploymentRequest) {
+				sku, budget := "future_accelerator", int32(4)
+				request.Spec.Hardware = &nvidiacomv1beta2.HardwareSpec{
+					GPU: &nvidiacomv1beta2.GPUHardwareSpec{SKU: &sku, Budget: &budget},
+				}
+			}),
+			wantWarnings: []string{`spec.hardware.gpu.sku: "future_accelerator" is not known to the AISimulate release bundled with this operator; the value is passed through unchanged and may work with an external AISimulate systems catalog`},
+		},
+		{
 			name:       "v1beta2 update bypasses legacy v1beta1 validation",
 			oldRequest: beta2DGDRForAdmission(setBeta2AdmissionHardware),
 			request: beta2DGDRForAdmission(func(request *nvidiacomv1beta2.DynamoGraphDeploymentRequest) {

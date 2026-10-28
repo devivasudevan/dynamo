@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 
 	nvidiacomv1beta2 "github.com/ai-dynamo/dynamo/deploy/operator/api/v1beta2"
+	aisimulatecatalog "github.com/ai-dynamo/dynamo/deploy/operator/internal/aisimulate"
 	"github.com/ai-dynamo/dynamo/deploy/operator/internal/controller/aisimulate"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -31,13 +32,20 @@ import (
 // does not decode is reported there. Errors about the decoded spec use the v1beta2 spec's own
 // field paths (spec.model, spec.aisimulate, ...), which are what the user wrote, so they are
 // rooted at spec rather than at fldPath.
-func validateDynamoGraphDeploymentRequestEnvelopeV1beta2(
+func (v *dynamoGraphDeploymentRequestValidation) validateDynamoGraphDeploymentRequestEnvelopeV1beta2(
 	raw *apiextensionsv1.JSON,
 	fldPath *field.Path,
 ) field.ErrorList {
 	var spec nvidiacomv1beta2.DynamoGraphDeploymentRequestSpec
 	if err := json.Unmarshal(raw.Raw, &spec); err != nil {
 		return field.ErrorList{field.Invalid(fldPath, "<redacted>", "must be a valid v1beta2 spec: "+err.Error())}
+	}
+	if spec.Hardware != nil && spec.Hardware.GPU != nil && spec.Hardware.GPU.SKU != nil &&
+		!aisimulatecatalog.IsKnownHardwareSKU(*spec.Hardware.GPU.SKU) {
+		v.warnf(
+			"spec.hardware.gpu.sku: %q is not known to the AISimulate release bundled with this operator; the value is passed through unchanged and may work with an external AISimulate systems catalog",
+			*spec.Hardware.GPU.SKU,
+		)
 	}
 	return validateDynamoGraphDeploymentRequestV1beta2(&spec)
 }
