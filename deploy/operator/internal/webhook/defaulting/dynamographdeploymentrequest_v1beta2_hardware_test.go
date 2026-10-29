@@ -20,6 +20,8 @@ package defaulting
 import (
 	"context"
 	"errors"
+	"math"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -41,7 +43,7 @@ func TestResolveHardwareCompletesTheTypedHardwareOrRejects(t *testing.T) {
 	num := func(n int32) *int32 { return &n }
 	h200x8 := gpu.GPUInfo{System: "h200_sxm", GPUsPerNode: 8, NodesWithGPUs: 1, TotalGPUs: 8, SelectedShapeGPUs: 8}
 	h200x64 := gpu.GPUInfo{System: "h200_sxm", GPUsPerNode: 8, NodesWithGPUs: 8, TotalGPUs: 64, SelectedShapeGPUs: 64}
-	tests := []struct {
+	type testCase struct {
 		name       string
 		hardware   *nvidiacomv1beta2.HardwareSpec
 		found      gpu.GPUInfo
@@ -52,7 +54,8 @@ func TestResolveHardwareCompletesTheTypedHardwareOrRejects(t *testing.T) {
 		wantCalls  int
 		wantFilter string
 		wantErr    string
-	}{
+	}
+	tests := []testCase{
 		{"omitted hardware discovers the SKU budget and node width", nil, h200x8, nil, "h200_sxm", 8, 8, 1, "", ""},
 		{"an empty hardware object opts out of discovery", &nvidiacomv1beta2.HardwareSpec{}, gpu.GPUInfo{}, errors.New("discovery must not run"), "", 0, 0, 0, "", ""},
 		{"same-SKU nodes with different GPU counts use the selected node shape", nil,
@@ -95,6 +98,15 @@ func TestResolveHardwareCompletesTheTypedHardwareOrRejects(t *testing.T) {
 			gpu.GPUInfo{System: "h200_sxm", GPUsPerNode: 8, NodesWithGPUs: 1, TotalGPUs: 8, SelectedShapeGPUs: 8}, nil, "", 8, 8, 1, "h200_sxm", ""},
 		{"no GPUs at all reject the missing budget", nil, gpu.GPUInfo{System: "h200_sxm"}, nil, "", 0, 0, 1, "",
 			`spec.hardware.gpu.budget: Required value: no GPUs of SKU "h200_sxm" were found in the cluster`},
+	}
+	if strconv.IntSize > 32 {
+		tooManyGPUs := int64(math.MaxInt32) + 1
+		tests = append(tests, testCase{
+			name:      "a discovered node width must fit the API integer",
+			found:     gpu.GPUInfo{System: "h200_sxm", GPUsPerNode: int(tooManyGPUs), SelectedShapeGPUs: 8},
+			wantCalls: 1,
+			wantErr:   "spec.hardware.numGpusPerNode: Invalid value: 2147483648: discovered node width exceeds the API maximum of 2147483647",
+		})
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
