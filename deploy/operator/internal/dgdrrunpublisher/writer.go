@@ -36,6 +36,9 @@ import (
 
 // StoredCandidate is the API server's view of a candidate right after it was applied.
 type StoredCandidate struct {
+	// UID identifies the incarnation returned by the API server. The publisher waits
+	// until that incarnation is visible through its cache before acknowledging completion.
+	UID types.UID
 	// ResourceVersion is the version a status write for this candidate is constrained to.
 	ResourceVersion string
 	// Populated reports that the candidate already has its evaluation status (a metrics
@@ -132,6 +135,7 @@ func (w *clientWriter) CreateCandidate(ctx context.Context, run *v1beta2.DynamoG
 		return StoredCandidate{}, fmt.Errorf("candidate %s is no longer controlled by run %s after apply", name, run.Name)
 	}
 	return StoredCandidate{
+		UID:             stored.UID,
 		ResourceVersion: stored.ResourceVersion,
 		Populated:       stored.Status.Metrics != nil,
 	}, nil
@@ -150,7 +154,7 @@ func (w *clientWriter) UpdateRunStatus(ctx context.Context, resourceVersion stri
 }
 
 func (w *clientWriter) DeleteCandidate(ctx context.Context, name string, uid types.UID) error {
-	object := &v1beta2.DynamoGraphDeploymentCandidate{ObjectMeta: metav1.ObjectMeta{Namespace: w.Namespace, Name: name}}
+	object := &v1beta2.DynamoGraphDeploymentCandidate{Namespace: w.Namespace, Name: name}
 	var options []client.DeleteOption
 	if uid != "" {
 		options = append(options, client.Preconditions{UID: &uid})
@@ -162,7 +166,7 @@ func (w *clientWriter) DeleteCandidate(ctx context.Context, name string, uid typ
 // and controller owner reference, the DGD spec with the resolved parameters, and the
 // companion resources as an annotation. The status goes through the status subresource.
 func buildCandidateApply(scheme *runtime.Scheme, namespace, runUID string, run *v1beta2.DynamoGraphDeploymentRun, name string, candidate dgdcreconcile.DesiredCandidate) (*unstructured.Unstructured, error) {
-	spec, companions, err := decodeManifest(candidate)
+	spec, companions, err := decodeManifest(candidate.ID, candidate.Spec)
 	if err != nil {
 		return nil, err
 	}
@@ -171,12 +175,10 @@ func buildCandidateApply(scheme *runtime.Scheme, namespace, runUID string, run *
 		return nil, err
 	}
 	object := &v1beta2.DynamoGraphDeploymentCandidate{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: namespace,
-			Name:      name,
-			Labels:    map[string]string{LabelRunUID: runUID, LabelCandidateID: candidate.ID},
-		},
-		Spec: v1beta2.DynamoGraphDeploymentCandidateSpec{DynamoGraphDeploymentSpec: *spec},
+		Namespace: namespace,
+		Name:      name,
+		Labels:    map[string]string{LabelRunUID: runUID, LabelCandidateID: candidate.ID},
+		Spec:      v1beta2.DynamoGraphDeploymentCandidateSpec{DynamoGraphDeploymentSpec: *spec},
 	}
 	if companions != "" {
 		object.Annotations = map[string]string{AnnotationAdditionalResources: companions}
