@@ -61,6 +61,7 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 	}`
 
 	discoveredH200 := gpu.GPUInfo{System: "h200_sxm", GPUsPerNode: 8, NodesWithGPUs: 1}
+	discoveredH100 := gpu.GPUInfo{System: "h100_sxm", GPUsPerNode: 8, NodesWithGPUs: 1}
 
 	tests := []struct {
 		name               string
@@ -116,8 +117,9 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 			gpuDiscovery: true,
 		},
 		{
-			name:    "v1beta2 create bypasses legacy v1beta1 validation",
-			request: beta2DGDRForAdmission(setBeta2AdmissionHardware),
+			name:       "v1beta2 create bypasses legacy v1beta1 validation",
+			request:    beta2DGDRForAdmission(setBeta2AdmissionHardware),
+			discovered: discoveredH100,
 		},
 		{
 			name:       "v1beta2 update bypasses legacy v1beta1 validation",
@@ -126,6 +128,7 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 				setBeta2AdmissionHardware(request)
 				request.Labels = map[string]string{"updated": "true"}
 			}),
+			discovered: discoveredH100,
 		},
 		{
 			name: "v1beta1 empty native representation is rejected by envelope validation",
@@ -559,7 +562,7 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 			},
 		},
 		{
-			name: "v1beta2 explicit hardware is kept",
+			name: "v1beta2 explicit hardware is kept after admission verifies the SKU",
 			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
 				spec["hardware"] = map[string]any{"gpu": map[string]any{"sku": "h100_sxm", "budget": int64(4)}}
 			}, nil),
@@ -575,23 +578,37 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 			},
 		},
 		{
-			name: "v1beta2 parameters are stored untouched and never decide hardware defaulting",
+			name: "v1beta2 explicit hardware is rejected when the SKU cannot be verified",
 			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
-				setV1beta2SearchSpace(spec, map[string]any{"hardware_sku": "h100_sxm", "gpu_budget": int64(4)})
+				spec["hardware"] = map[string]any{"gpu": map[string]any{"sku": "h100_sxm", "budget": int64(4)}}
+			}, nil),
+			gpuDiscovery: true,
+			discoveryErr: errors.New("no matching GPUs found"),
+			wantWebhook: []string{
+				`spec.hardware.gpu.sku: Invalid value: "h100_sxm": could not be verified against the cluster's GPUs (no matching GPUs found)`,
+			},
+		},
+		{
+			name: "v1beta2 input overrides are stored untouched and never decide hardware defaulting",
+			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
+				setV1beta2InputOverrides(spec, map[string]any{
+					"engine":       map[string]any{"hardware": "h100_sxm"},
+					"optimization": map[string]any{"constraints": map[string]any{"max_candidate_gpus": int64(4)}},
+				})
 			}, nil),
 			gpuDiscovery: true,
 			discovered:   discoveredH200,
 			check: func(t *testing.T, result *unstructured.Unstructured) {
 				expectV1beta2GPUValues(t, result, "h200_sxm", 8)
-				if got := v1beta2String(t, result, "spec", "aisimulate", "parameters", "search_space", "hardware_sku"); got != "h100_sxm" {
-					t.Fatalf("parameters.search_space.hardware_sku = %q, want h100_sxm", got)
+				if got := v1beta2String(t, result, "spec", "aisimulate", "inputOverrides", "engine", "hardware"); got != "h100_sxm" {
+					t.Fatalf("inputOverrides.engine.hardware = %q, want h100_sxm", got)
 				}
 			},
 		},
 		{
-			name: "v1beta2 parameters null does not suppress hardware discovery",
+			name: "v1beta2 input overrides null does not suppress hardware discovery",
 			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
-				setV1beta2SearchSpace(spec, map[string]any{"hardware_sku": nil})
+				setV1beta2InputOverrides(spec, map[string]any{"engine": map[string]any{"hardware": nil}})
 			}, nil),
 			gpuDiscovery: true,
 			discovered:   discoveredH200,
@@ -604,10 +621,16 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 		{
 			name: "v1beta2 metadata-only update does not read the cluster again",
 			oldRequest: v1beta2DGDRForAdmission(func(spec map[string]any) {
-				setV1beta2SearchSpace(spec, map[string]any{"hardware_sku": "h100_sxm", "gpu_budget": int64(8)})
+				setV1beta2InputOverrides(spec, map[string]any{
+					"engine":       map[string]any{"hardware": "h100_sxm"},
+					"optimization": map[string]any{"constraints": map[string]any{"max_candidate_gpus": int64(8)}},
+				})
 			}, nil),
 			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
-				setV1beta2SearchSpace(spec, map[string]any{"hardware_sku": "h100_sxm", "gpu_budget": int64(8)})
+				setV1beta2InputOverrides(spec, map[string]any{
+					"engine":       map[string]any{"hardware": "h100_sxm"},
+					"optimization": map[string]any{"constraints": map[string]any{"max_candidate_gpus": int64(8)}},
+				})
 			}, map[string]any{"updated": "true"}),
 			gpuDiscovery: true,
 			discovered:   discoveredH200,
@@ -669,12 +692,14 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 			gpuDiscovery: true,
 			discovered:   discoveredH200,
 			check: func(t *testing.T, result *unstructured.Unstructured) {
-				for key, want := range map[string]float64{"isl": 1024, "osl": 128, "concurrency": 10} {
+				for key, want := range map[string]float64{"inputTokens": 1024, "outputTokens": 128} {
 					if got := v1beta2Number(t, result, "spec", "workload", "static", key); got != want {
 						t.Fatalf("workload.static.%s = %v, want %v", key, got, want)
 					}
 				}
-				v1beta2Absent(t, result, "spec", "workload", "static", "kvLoadRatio")
+				if got := v1beta2Number(t, result, "spec", "workload", "static", "load", "concurrency"); got != 10 {
+					t.Fatalf("workload.static.load.concurrency = %v, want 10", got)
+				}
 			},
 		},
 		{
@@ -689,16 +714,15 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 			},
 		},
 		{
-			name: "v1beta2 empty workload static stays empty beside native parameters",
+			name: "v1beta2 empty workload static stays empty beside public input overrides",
 			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
 				spec["workload"] = map[string]any{"static": map[string]any{}}
-				spec["aisimulate"] = map[string]any{"parameters": mustJSONObject(t, `{"workload":{"isl":512,"osl":128,"concurrency":8,"request_count":100}}`)}
+				spec["aisimulate"] = map[string]any{"inputOverrides": mustJSONObject(t, `{"traffic":{"source":{"type":"synthetic","input_tokens":512,"output_tokens":128},"load":{"type":"concurrency","concurrency":8},"stop":{"requests":100}}}`)}
 			}, nil),
 			gpuDiscovery: true,
 			discovered:   discoveredH200,
 			check: func(t *testing.T, result *unstructured.Unstructured) {
 				v1beta2Empty(t, result, "spec", "workload", "static")
-				v1beta2Absent(t, result, "spec", "objective", "sla")
 				expectV1beta2AdmissionDefaults(t, result)
 			},
 		},
@@ -711,84 +735,103 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 			discovered:   discoveredH200,
 			check: func(t *testing.T, result *unstructured.Unstructured) {
 				v1beta2Empty(t, result, "spec", "objective", "sla")
-				if got := v1beta2Number(t, result, "spec", "workload", "static", "isl"); got != 1024 {
-					t.Fatalf("workload.static.isl = %v, want the schema default 1024", got)
+				if got := v1beta2Number(t, result, "spec", "workload", "static", "inputTokens"); got != 1024 {
+					t.Fatalf("workload.static.inputTokens = %v, want the admission default 1024", got)
 				}
 			},
 		},
 		{
-			name: "v1beta2 native parameters win without rewriting the typed spec",
+			name: "v1beta2 public input overrides win without rewriting the typed spec",
 			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
-				spec["aisimulate"] = map[string]any{"parameters": mustJSONObject(t, `{"workload":{"isl":256}}`)}
+				spec["aisimulate"] = map[string]any{"inputOverrides": mustJSONObject(t, `{"traffic":{"source":{"input_tokens":256}}}`)}
 			}, nil),
 			gpuDiscovery: true,
 			discovered:   discoveredH200,
 			check: func(t *testing.T, result *unstructured.Unstructured) {
-				if got := v1beta2Number(t, result, "spec", "workload", "static", "isl"); got != 1024 {
-					t.Fatalf("typed workload.static.isl = %v, want 1024", got)
+				if got := v1beta2Number(t, result, "spec", "workload", "static", "inputTokens"); got != 1024 {
+					t.Fatalf("typed workload.static.inputTokens = %v, want 1024", got)
 				}
-				if got := v1beta2Number(t, result, "spec", "aisimulate", "parameters", "workload", "isl"); got != 256 {
-					t.Fatalf("parameters.workload.isl = %v, want 256", got)
+				if got := v1beta2Number(t, result, "spec", "aisimulate", "inputOverrides", "traffic", "source", "input_tokens"); got != 256 {
+					t.Fatalf("inputOverrides.traffic.source.input_tokens = %v, want 256", got)
 				}
 			},
 		},
 		{
-			name: "v1beta2 stored invalid spec is rejected again on a metadata-only update",
-			oldRequest: v1beta2DGDRForAdmission(func(spec map[string]any) {
-				spec["aisimulate"] = map[string]any{"image": "registry.example.com/aisimulate:custom"}
-			}, nil),
+			name: "v1beta2 public input overrides may configure non-reserved dgdr run fields",
 			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
-				spec["aisimulate"] = map[string]any{"image": "registry.example.com/aisimulate:custom"}
-			}, map[string]any{"updated": "true"}),
-			seedWithoutWebhook: true,
-			gpuDiscovery:       true,
-			discovered:         discoveredH200,
+				setV1beta2InputOverrides(spec, map[string]any{"dgdr_run": map[string]any{
+					"generator":                 "aic",
+					"snapshot_interval_seconds": int64(30),
+				}})
+			}, nil),
+			gpuDiscovery: true,
+			discovered:   discoveredH200,
+			check: func(t *testing.T, result *unstructured.Unstructured) {
+				if got := v1beta2String(t, result, "spec", "aisimulate", "inputOverrides", "dgdr_run", "generator"); got != "aic" {
+					t.Fatalf("dgdr_run.generator = %q, want aic", got)
+				}
+			},
+		},
+		{
+			name: "v1beta2 operator-owned dgdr run input cannot be overridden",
+			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
+				setV1beta2InputOverrides(spec, map[string]any{"dgdr_run": map[string]any{
+					"derive_runtime_images":    false,
+					"max_candidates":           int64(3),
+					"name":                     "foreign-run",
+					"namespace":                "other",
+					"num_gpus_per_node":        int64(4),
+					"runtime_image":            "example.invalid/runtime:latest",
+					"runtime_version_override": "1.2.3",
+					"snapshot_dir":             "/tmp/snapshots",
+				}})
+			}, nil),
+			gpuDiscovery: true,
+			discovered:   discoveredH200,
 			wantWebhook: []string{
-				"spec.aisimulate.versionOverride: Required value: is required when the tag of spec.aisimulate.image is not a Dynamo release with a bundled AISimulate version",
+				"spec.aisimulate.inputOverrides.dgdr_run.derive_runtime_images: Forbidden: is managed by the operator and cannot be overridden",
+				"spec.aisimulate.inputOverrides.dgdr_run.max_candidates: Forbidden: is managed by the operator and cannot be overridden",
+				"spec.aisimulate.inputOverrides.dgdr_run.name: Forbidden: is managed by the operator and cannot be overridden",
+				"spec.aisimulate.inputOverrides.dgdr_run.namespace: Forbidden: is managed by the operator and cannot be overridden",
+				"spec.aisimulate.inputOverrides.dgdr_run.num_gpus_per_node: Forbidden: is managed by the operator and cannot be overridden",
+				"spec.aisimulate.inputOverrides.dgdr_run.runtime_image: Forbidden: is managed by the operator and cannot be overridden",
+				"spec.aisimulate.inputOverrides.dgdr_run.runtime_version_override: Forbidden: is managed by the operator and cannot be overridden",
+				"spec.aisimulate.inputOverrides.dgdr_run.snapshot_dir: Forbidden: is managed by the operator and cannot be overridden",
 			},
 		},
 		{
-			name:         "v1beta2 model-only request stores the configured AISimulate image and its override",
-			request:      v1beta2DGDRForAdmission(nil, nil),
-			gpuDiscovery: true,
-			discovered:   discoveredH200,
-			check: func(t *testing.T, result *unstructured.Unstructured) {
-				expectV1beta2AdmissionDefaults(t, result)
-			},
-		},
-		{
-			name: "v1beta2 caller image does not receive the operator's version override",
+			name: "v1beta2 dgdr run input cannot be deleted",
 			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
-				spec["aisimulate"] = map[string]any{"image": "registry.example.com/aisimulate:1.6.0"}
+				setV1beta2InputOverrides(spec, map[string]any{"dgdr_run": nil})
 			}, nil),
 			gpuDiscovery: true,
 			discovered:   discoveredH200,
-			check: func(t *testing.T, result *unstructured.Unstructured) {
-				if got := v1beta2String(t, result, "spec", "aisimulate", "image"); got != "registry.example.com/aisimulate:1.6.0" {
-					t.Fatalf("aisimulate.image = %q, want the caller's image", got)
-				}
-				if _, found, _ := unstructured.NestedString(result.Object, "spec", "aisimulate", "versionOverride"); found {
-					t.Fatalf("aisimulate.versionOverride was set next to a caller's image")
-				}
+			wantWebhook: []string{
+				"spec.aisimulate.inputOverrides.dgdr_run: Forbidden: must be an object because the operator owns required execution fields within it",
 			},
 		},
 		{
-			name: "v1beta2 caller override wins next to the configured image",
+			name: "v1beta2 dgdr run input cannot be replaced by a scalar",
 			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
-				spec["aisimulate"] = map[string]any{"versionOverride": "2.0.0"}
+				setV1beta2InputOverrides(spec, map[string]any{"dgdr_run": "wrong"})
 			}, nil),
 			gpuDiscovery: true,
 			discovered:   discoveredH200,
-			check: func(t *testing.T, result *unstructured.Unstructured) {
-				if got := v1beta2String(t, result, "spec", "aisimulate", "image"); got != admissionAISimulateImage {
-					t.Fatalf("aisimulate.image = %q, want the configured image", got)
-				}
-				if got := v1beta2String(t, result, "spec", "aisimulate", "versionOverride"); got != "2.0.0" {
-					t.Fatalf("aisimulate.versionOverride = %q, want the caller's 2.0.0", got)
-				}
+			wantWebhook: []string{
+				"spec.aisimulate.inputOverrides.dgdr_run: Forbidden: must be an object because the operator owns required execution fields within it",
 			},
 		},
-
+		{
+			name: "v1beta2 dgdr run input cannot be replaced by a list",
+			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
+				setV1beta2InputOverrides(spec, map[string]any{"dgdr_run": []any{"wrong"}})
+			}, nil),
+			gpuDiscovery: true,
+			discovered:   discoveredH200,
+			wantWebhook: []string{
+				"spec.aisimulate.inputOverrides.dgdr_run: Forbidden: must be an object because the operator owns required execution fields within it",
+			},
+		},
 		{
 			name:         "v1beta2 hardware omitted is discovered and the budget capped",
 			request:      v1beta2DGDRForAdmission(nil, nil),
@@ -832,12 +875,12 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 			},
 		},
 		{
-			name: "v1beta2 a SKU and a budget are kept without reading the cluster",
+			name: "v1beta2 a SKU and a budget are kept after SKU verification",
 			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
 				spec["hardware"] = map[string]any{"gpu": map[string]any{"sku": "h100_sxm", "budget": int64(4)}}
 			}, nil),
 			gpuDiscovery: true,
-			discoveryErr: errors.New("the cluster must not be read"),
+			discovered:   gpu.GPUInfo{System: "h100_sxm", GPUsPerNode: 8, NodesWithGPUs: 1},
 			check: func(t *testing.T, result *unstructured.Unstructured) {
 				expectV1beta2GPUValues(t, result, "h100_sxm", 4)
 			},
@@ -905,8 +948,7 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 			gpuDiscovery: true,
 			discovered:   gpu.GPUInfo{System: "h100_sxm"},
 			wantWebhook: []string{
-				`spec.hardware.gpu.budget: Required value: no GPUs of SKU "h100_sxm" were found in the cluster; ` +
-					"set spec.hardware.gpu.budget",
+				`spec.hardware.gpu.sku: Invalid value: "h100_sxm": no GPUs of this SKU were found in the cluster`,
 			},
 		},
 
@@ -924,27 +966,31 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 			},
 		},
 		{
-			name: "v1beta2 pareto objective receives no scalar metric",
+			name: "v1beta2 pareto objective is reserved until Candidate publication supports it",
 			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
-				spec["objective"] = map[string]any{"mode": "Pareto", "metrics": []any{"TTFT", "Throughput"}}
+				spec["objective"] = map[string]any{"mode": "Pareto", "metrics": []any{"ThroughputPerGPU", "ThroughputPerUser"}}
+			}, nil),
+			gpuDiscovery:  true,
+			discovered:    discoveredH200,
+			wantSchemaErr: `spec.objective.mode: Unsupported value: "Pareto": supported values: "Optimize"`,
+		},
+		{
+			name: "v1beta2 optimize rejects the reserved Pareto metrics field",
+			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
+				spec["objective"] = map[string]any{"mode": "Optimize", "metrics": []any{"ThroughputPerGPU", "ThroughputPerUser"}}
 			}, nil),
 			gpuDiscovery: true,
 			discovered:   discoveredH200,
-			check: func(t *testing.T, result *unstructured.Unstructured) {
-				v1beta2Absent(t, result, "spec", "objective", "metric")
-			},
+			wantCELErr:   `spec.objective: Invalid value: metrics is reserved for the future Pareto implementation`,
 		},
 		{
 			name: "v1beta2 explicit values are all kept",
 			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
 				spec["backends"] = []any{"vllm"}
 				spec["hardware"] = map[string]any{"gpu": map[string]any{"sku": "h100_sxm", "budget": int64(4)}}
-				spec["workload"] = map[string]any{"static": map[string]any{"isl": int64(10)}}
+				spec["workload"] = map[string]any{"static": map[string]any{"inputTokens": int64(10)}}
 				spec["objective"] = map[string]any{"mode": "Optimize", "metric": "TTFT"}
-				spec["aisimulate"] = map[string]any{
-					"image":           "registry.example.com/aisimulate:custom",
-					"versionOverride": "1.4.0",
-				}
+				spec["aisimulate"] = map[string]any{"inputOverrides": map[string]any{"custom": "kept"}}
 				spec["recommendation"] = map[string]any{"maxCandidates": int64(3)}
 			}, nil),
 			gpuDiscovery: true,
@@ -977,46 +1023,47 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 			wantSchemaErr: `spec.model.name: Invalid value: "": spec.model.name in body should be at least 1 chars long`,
 		},
 		{
-			name: "v1beta2 kvLoadRatio range needs min below max",
+			name: "v1beta2 KV capacity fraction range needs min below max",
 			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
-				spec["workload"] = map[string]any{"static": map[string]any{"kvLoadRatio": []any{0.9, 0.1}}}
+				spec["workload"] = map[string]any{"static": map[string]any{"load": map[string]any{
+					"kvCapacityFraction": map[string]any{"range": map[string]any{"min": 0.9, "max": 0.1}},
+				}}}
 			}, nil),
 			gpuDiscovery: true,
 			discovered:   discoveredH200,
-			wantCELErr:   `spec.workload.static.kvLoadRatio: Invalid value: a range needs min < max`,
+			wantCELErr:   `spec.workload.static.load.kvCapacityFraction.range: Invalid value: min must be less than max`,
 		},
 		{
-			name: "v1beta2 versionOverride latest is rejected by the schema",
+			name: "v1beta2 KV capacity fraction must be positive",
 			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
-				spec["aisimulate"] = map[string]any{"versionOverride": "latest"}
+				spec["workload"] = map[string]any{"static": map[string]any{"load": map[string]any{
+					"kvCapacityFraction": map[string]any{"value": 0.0},
+				}}}
 			}, nil),
 			gpuDiscovery:  true,
 			discovered:    discoveredH200,
-			wantSchemaErr: `spec.aisimulate.versionOverride: Invalid value: "latest": spec.aisimulate.versionOverride in body should match '^(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$'`,
+			wantSchemaErr: `spec.workload.static.load.kvCapacityFraction.value: Invalid value: 0: spec.workload.static.load.kvCapacityFraction.value in body should be greater than 0`,
 		},
 		{
-			name: "v1beta2 versionOverride with a v prefix is rejected by the schema",
+			name: "v1beta2 load requires exactly one variant",
 			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
-				spec["aisimulate"] = map[string]any{"versionOverride": "v0.13.0"}
-			}, nil),
-			gpuDiscovery:  true,
-			discovered:    discoveredH200,
-			wantSchemaErr: `spec.aisimulate.versionOverride: Invalid value: "v0.13.0": spec.aisimulate.versionOverride in body should match '^(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$'`,
-		},
-		{
-			name: "v1beta2 versionOverride 0.13.0 is accepted",
-			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
-				spec["aisimulate"] = map[string]any{"versionOverride": "0.13.0"}
+				spec["workload"] = map[string]any{"static": map[string]any{"load": map[string]any{
+					"concurrency": int64(10), "requestsPerSecond": 10.0,
+				}}}
 			}, nil),
 			gpuDiscovery: true,
 			discovered:   discoveredH200,
-			check: func(t *testing.T, result *unstructured.Unstructured) {
-				if got := v1beta2String(t, result, "spec", "aisimulate", "versionOverride"); got != "0.13.0" {
-					t.Fatalf("versionOverride = %q, want 0.13.0", got)
-				}
-			},
+			wantCELErr:   `spec.workload.static.load: Invalid value: exactly one of requestsPerSecond, concurrency, or kvCapacityFraction must be specified`,
 		},
-
+		{
+			name: "v1beta2 empty load is not a second default opt-out",
+			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
+				spec["workload"] = map[string]any{"static": map[string]any{"load": map[string]any{}}}
+			}, nil),
+			gpuDiscovery: true,
+			discovered:   discoveredH200,
+			wantCELErr:   `spec.workload.static.load: Invalid value: exactly one of requestsPerSecond, concurrency, or kvCapacityFraction must be specified`,
+		},
 		// v1beta2 UPDATE: defaults stay idempotent, hardware is never rediscovered, and any
 		// spec change is fully validated.
 		{
@@ -1047,8 +1094,8 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 					t.Fatalf("generation = %d, want 1", result.GetGeneration())
 				}
 				expectV1beta2GPUValues(t, result, "h200_sxm", 8)
-				if got := v1beta2String(t, result, "spec", "aisimulate", "parameters", "search_space", "hardware_sku"); got != "h100_sxm" {
-					t.Fatalf("parameters.search_space.hardware_sku = %q, want h100_sxm", got)
+				if got := v1beta2String(t, result, "spec", "aisimulate", "inputOverrides", "engine", "hardware"); got != "h100_sxm" {
+					t.Fatalf("inputOverrides.engine.hardware = %q, want h100_sxm", got)
 				}
 			},
 		},
@@ -1122,6 +1169,40 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 	}
 }
 
+func TestDynamoGraphDeploymentRunSpecIsImmutable(t *testing.T) {
+	tests := []struct {
+		name       string
+		oldRun     *nvidiacomv1beta2.DynamoGraphDeploymentRun
+		run        *nvidiacomv1beta2.DynamoGraphDeploymentRun
+		wantCELErr string
+	}{
+		{
+			name:   "metadata-only update keeps the immutable spec",
+			oldRun: v1beta2RunForAdmission(v1beta2AdmissionModel, nil),
+			run:    v1beta2RunForAdmission(v1beta2AdmissionModel, map[string]string{"updated": "true"}),
+		},
+		{
+			name:       "spec update is rejected by the API server",
+			oldRun:     v1beta2RunForAdmission(v1beta2AdmissionModel, nil),
+			run:        v1beta2RunForAdmission(alternateAdmissionModel, nil),
+			wantCELErr: `<nil>: Invalid value: spec is immutable`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actual := runAdmissionTest(t, admissionTestCase{
+				object:       tt.run,
+				oldObject:    tt.oldRun,
+				wantCELError: tt.wantCELErr,
+			})
+			if tt.wantCELErr == "" && actual.GetGeneration() != 1 {
+				t.Fatalf("generation = %d, want 1 for a metadata-only update", actual.GetGeneration())
+			}
+		})
+	}
+}
+
 func TestDynamoGraphDeploymentRequestStatusRepresentationMatchesSpec(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -1172,6 +1253,7 @@ func TestDynamoGraphDeploymentRequestStatusRepresentationMatchesSpec(t *testing.
 			t.Log("Create a request through the production API and conversion path")
 			env := admissionEnv.ForTest(t)
 			admissionGate.set(features.Gates{GPUDiscovery: true})
+			setAdmissionH100Topology()
 			warnings := &warningRecorder{}
 			createClient := newAdmissionResourceClient(t, env, test.createObject, "", warnings)
 			object, _ := admissionObject(t, test.createObject, env.Namespace(), nil)
@@ -1203,6 +1285,7 @@ func TestDynamoGraphDeploymentRequestV1Beta2EmptyStatusSurvivesV1Alpha1(t *testi
 	t.Log("Create a native v1beta2 request with empty status")
 	env := admissionEnv.ForTest(t)
 	admissionGate.set(features.Gates{GPUDiscovery: true})
+	setAdmissionH100Topology()
 	warnings := &warningRecorder{}
 	beta2Fixture := beta2DGDRForAdmission(func(request *nvidiacomv1beta2.DynamoGraphDeploymentRequest) {
 		request.Name = "empty-status-alpha-bridge"
@@ -1320,16 +1403,26 @@ func beta2DGDRForAdmission(
 	return request
 }
 
+func v1beta2RunForAdmission(model string, labels map[string]string) *nvidiacomv1beta2.DynamoGraphDeploymentRun {
+	return &nvidiacomv1beta2.DynamoGraphDeploymentRun{
+		APIVersion: nvidiacomv1beta2.GroupVersion.String(),
+		Kind:       "DynamoGraphDeploymentRun",
+		Name:       "test-v1beta2-dgdr-run", Namespace: "default", Labels: labels,
+		Spec: nvidiacomv1beta2.DynamoGraphDeploymentRunSpec{NativeSearchInput: nvidiacomv1beta2.NativeSearchInput{
+			Model: &nvidiacomv1beta2.ModelSpec{Name: model},
+		}},
+	}
+}
+
 const v1beta2AdmissionModel = "Qwen/Qwen3-0.6B"
 
-// v1beta2NativeHardwareDGDR supplies hardware only through native AISimulate parameters.
+// v1beta2NativeHardwareDGDR supplies hardware only through public AISimulate input overrides.
 func v1beta2NativeHardwareDGDR(labels map[string]any) *unstructured.Unstructured {
 	return v1beta2DGDRForAdmission(func(spec map[string]any) {
 		spec["aisimulate"] = map[string]any{
-			"image":           admissionAISimulateImage,
-			"versionOverride": admissionAISimulateVersionOverride,
-			"parameters": map[string]any{
-				"search_space": map[string]any{"hardware_sku": "h100_sxm", "gpu_budget": int64(8)},
+			"inputOverrides": map[string]any{
+				"engine":       map[string]any{"hardware": "h100_sxm"},
+				"optimization": map[string]any{"constraints": map[string]any{"max_candidate_gpus": int64(8)}},
 			},
 		}
 	}, labels)
@@ -1356,7 +1449,7 @@ func v1beta2DGDRForAdmission(mutate func(spec map[string]any), labels map[string
 	}}
 }
 
-// mustJSONObject decodes a native AISimulate parameters document.
+// mustJSONObject decodes a native AISimulate input override document.
 func mustJSONObject(t *testing.T, document string) map[string]any {
 	t.Helper()
 	var value map[string]any
@@ -1405,13 +1498,6 @@ func v1beta2String(t *testing.T, obj *unstructured.Unstructured, path ...string)
 	return text
 }
 
-func v1beta2Absent(t *testing.T, obj *unstructured.Unstructured, path ...string) {
-	t.Helper()
-	if value, found := v1beta2Field(t, obj, path...); found {
-		t.Fatalf("%v = %#v, want it absent", path, value)
-	}
-}
-
 func v1beta2Empty(t *testing.T, obj *unstructured.Unstructured, path ...string) {
 	t.Helper()
 	value, found := v1beta2Field(t, obj, path...)
@@ -1423,15 +1509,22 @@ func v1beta2Empty(t *testing.T, obj *unstructured.Unstructured, path ...string) 
 // expectV1beta2StructuralDefaults checks the defaults admission supplies to a model-only Request.
 func expectV1beta2StructuralDefaults(t *testing.T, obj *unstructured.Unstructured) {
 	t.Helper()
-	for key, want := range map[string]float64{"isl": 1024, "osl": 128, "concurrency": 10} {
+	for key, want := range map[string]float64{"inputTokens": 1024, "outputTokens": 128} {
 		if got := v1beta2Number(t, obj, "spec", "workload", "static", key); got != want {
 			t.Fatalf("workload.static.%s = %v, want %v", key, got, want)
 		}
 	}
-	v1beta2Absent(t, obj, "spec", "workload", "static", "kvLoadRatio")
-	v1beta2Absent(t, obj, "spec", "objective", "sla")
+	if got := v1beta2Number(t, obj, "spec", "workload", "static", "load", "concurrency"); got != 10 {
+		t.Fatalf("workload.static.load.concurrency = %v, want 10", got)
+	}
 	if got := v1beta2String(t, obj, "spec", "objective", "mode"); got != "Optimize" {
 		t.Fatalf("objective.mode = %q, want Optimize", got)
+	}
+	if got := v1beta2Number(t, obj, "spec", "objective", "sla", "ttftMs"); got != 2000 {
+		t.Fatalf("objective.sla.ttftMs = %v, want 2000", got)
+	}
+	if got := v1beta2Number(t, obj, "spec", "objective", "sla", "itlMs"); got != 30 {
+		t.Fatalf("objective.sla.itlMs = %v, want 30", got)
 	}
 	if got, _ := v1beta2Field(t, obj, "spec", "backends"); !reflect.DeepEqual(got, []any{"vllm", "sglang", "trtllm"}) {
 		t.Fatalf("backends = %#v, want vllm, sglang and trtllm", got)
@@ -1452,7 +1545,9 @@ func expectV1beta2ExplicitValues(t *testing.T, obj *unstructured.Unstructured) {
 		value float64
 	}{
 		{[]string{"spec", "hardware", "gpu", "budget"}, 4},
-		{[]string{"spec", "workload", "static", "isl"}, 10},
+		{[]string{"spec", "workload", "static", "inputTokens"}, 10},
+		{[]string{"spec", "workload", "static", "outputTokens"}, 128},
+		{[]string{"spec", "workload", "static", "load", "concurrency"}, 10},
 		{[]string{"spec", "recommendation", "maxCandidates"}, 3},
 	} {
 		if got := v1beta2Number(t, obj, want.path...); got != want.value {
@@ -1466,29 +1561,20 @@ func expectV1beta2ExplicitValues(t *testing.T, obj *unstructured.Unstructured) {
 		{[]string{"spec", "hardware", "gpu", "sku"}, "h100_sxm"},
 		{[]string{"spec", "objective", "mode"}, "Optimize"},
 		{[]string{"spec", "objective", "metric"}, "TTFT"},
-		{[]string{"spec", "aisimulate", "image"}, "registry.example.com/aisimulate:custom"},
-		{[]string{"spec", "aisimulate", "versionOverride"}, "1.4.0"},
+		{[]string{"spec", "aisimulate", "inputOverrides", "custom"}, "kept"},
 	} {
 		if got := v1beta2String(t, obj, want.path...); got != want.value {
 			t.Fatalf("%v = %q, want %q", want.path, got, want.value)
 		}
 	}
-	// A static workload that names only isl is not filled in.
-	v1beta2Absent(t, obj, "spec", "workload", "static", "osl")
-	v1beta2Absent(t, obj, "spec", "workload", "static", "concurrency")
+	// A nonempty static workload receives every omitted member of the default.
 }
 
 // expectV1beta2AdmissionDefaults checks what admission supplies from the environment.
 func expectV1beta2AdmissionDefaults(t *testing.T, obj *unstructured.Unstructured) {
 	t.Helper()
-	if got := v1beta2String(t, obj, "spec", "objective", "metric"); got != "Throughput" {
-		t.Fatalf("objective.metric = %q, want Throughput", got)
-	}
-	if got := v1beta2String(t, obj, "spec", "aisimulate", "image"); got != admissionAISimulateImage {
-		t.Fatalf("aisimulate.image = %q, want %q", got, admissionAISimulateImage)
-	}
-	if got := v1beta2String(t, obj, "spec", "aisimulate", "versionOverride"); got != admissionAISimulateVersionOverride {
-		t.Fatalf("aisimulate.versionOverride = %q, want %q", got, admissionAISimulateVersionOverride)
+	if got := v1beta2String(t, obj, "spec", "objective", "metric"); got != "ThroughputPerGPU" {
+		t.Fatalf("objective.metric = %q, want ThroughputPerGPU", got)
 	}
 	if got := v1beta2String(t, obj, "spec", "hardware", "gpu", "sku"); got != "h200_sxm" {
 		t.Fatalf("hardware.gpu.sku = %q, want h200_sxm", got)
@@ -1498,15 +1584,14 @@ func expectV1beta2AdmissionDefaults(t *testing.T, obj *unstructured.Unstructured
 	}
 }
 
-// setV1beta2SearchSpace sets spec.aisimulate.parameters.search_space to searchSpace, replacing
-// any parameters the fixture carried.
-func setV1beta2SearchSpace(spec map[string]any, searchSpace map[string]any) {
+// setV1beta2InputOverrides replaces any input overrides the fixture carried.
+func setV1beta2InputOverrides(spec map[string]any, overrides map[string]any) {
 	aisimulate, _ := spec["aisimulate"].(map[string]any)
 	if aisimulate == nil {
 		aisimulate = map[string]any{}
 		spec["aisimulate"] = aisimulate
 	}
-	aisimulate["parameters"] = map[string]any{"search_space": searchSpace}
+	aisimulate["inputOverrides"] = overrides
 }
 
 // setBeta2AdmissionHardware names the hardware, so fixtures do not depend on GPU discovery.

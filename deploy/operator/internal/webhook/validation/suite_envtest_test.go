@@ -45,10 +45,6 @@ const (
 	frontendImage150           = "registry.example/dynamo-frontend:1.5.0"
 	legacyEPPImage140          = "registry.example/epp-image:1.4.0"
 	legacySeedUsername         = "operatorenv-legacy-seeder"
-	admissionAISimulateImage   = "registry.example.com/aisimulate:nightly"
-	// admissionAISimulateVersionOverride is the AISimulate version bundled in the configured
-	// default image, whose tag is not a Dynamo release.
-	admissionAISimulateVersionOverride = "0.13.0"
 )
 
 func groveProviderOverride(target, value string) *nvidiacomv1beta1.ProviderOverride {
@@ -101,9 +97,7 @@ func setupAdmissionWebhooks(mgr ctrl.Manager, opts operatorenv.WebhookSetupOptio
 		OperatorPrincipal: opts.OperatorPrincipal,
 		Gate:              admissionGate,
 		DGDRV1beta2: webhookdefaulting.DGDRV1beta2Options{
-			AISimulateImage:           admissionAISimulateImage,
-			AISimulateVersionOverride: admissionAISimulateVersionOverride,
-			Hardware:                  admissionHardware,
+			Hardware: admissionHardware,
 		},
 	})
 }
@@ -127,6 +121,12 @@ func (f *fakeHardwareDiscoverer) Discover(context.Context, nvidiacomv1beta1.GPUS
 	defer f.mu.Unlock()
 	found := f.found
 	return &found, f.err
+}
+
+func setAdmissionH100Topology() {
+	admissionHardware.set(gpu.GPUInfo{
+		System: "h100_sxm", GPUsPerNode: 8, NodesWithGPUs: 1,
+	}, nil)
 }
 
 type mutableFeatureGate struct {
@@ -304,6 +304,8 @@ func admissionResource(t *testing.T, kind string) string {
 		return "dynamographdeployments"
 	case "DynamoGraphDeploymentRequest":
 		return "dynamographdeploymentrequests"
+	case "DynamoGraphDeploymentRun":
+		return "dynamographdeploymentruns"
 	default:
 		t.Fatalf("unsupported admission kind %q", kind)
 		return ""
@@ -330,6 +332,8 @@ func admissionGVK(t *testing.T, object runtime.Object) schema.GroupVersionKind {
 		return nvidiacomv1beta1.DynamoGraphDeploymentRequestGVK
 	case *nvidiacomv1beta2.DynamoGraphDeploymentRequest:
 		return nvidiacomv1beta2.DynamoGraphDeploymentRequestGVK
+	case *nvidiacomv1beta2.DynamoGraphDeploymentRun:
+		return nvidiacomv1beta2.DynamoGraphDeploymentRunGVK
 	default:
 		t.Fatalf("unsupported admission object type %T", object)
 		return schema.GroupVersionKind{}

@@ -101,10 +101,9 @@ func TestV1Beta2RoundTripUsesEnvelope(t *testing.T) {
 				},
 				Workload: &WorkloadSpec{
 					Static: &StaticWorkloadSpec{
-						ISL:             ptr.To(int32(4096)),
-						OSL:             ptr.To(int32(1024)),
-						NumRequestRatio: ptr.To(2.0),
-						RequestRate:     ptr.To(12.5),
+						InputTokens:  ptr.To(int32(4096)),
+						OutputTokens: ptr.To(int32(1024)),
+						Load:         &StaticLoadSpec{RequestsPerSecond: ptr.To(12.5)},
 					},
 				},
 				Objective: &ObjectiveSpec{
@@ -113,9 +112,7 @@ func TestV1Beta2RoundTripUsesEnvelope(t *testing.T) {
 					SLA:     &ObjectiveSLASpec{TTFTMs: ptr.To(2000.0), ITLMs: ptr.To(30.0)},
 				},
 				AISimulate: &AISimulateSpec{
-					Image:           "nvcr.io/nvidia/aisimulate:latest",
-					VersionOverride: "1.0.0",
-					Parameters:      &runtime.RawExtension{Raw: []byte(`{"search_method":"grid"}`)},
+					InputOverrides: &runtime.RawExtension{Raw: []byte(`{"search_method":"grid"}`)},
 				},
 				Recommendation: &RecommendationSpec{MaxCandidates: 3},
 			},
