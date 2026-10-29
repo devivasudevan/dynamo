@@ -26,6 +26,7 @@ import (
 // DynamoGraphDeploymentRunSpec is an immutable, resolved copy of an accepted DGDR spec.
 // Run creators resolve optional Request inputs before persisting the Run.
 // +kubebuilder:validation:XValidation:rule="has(self.model)",message="model is required"
+// +kubebuilder:validation:XValidation:rule="has(self.hardware) && ((!has(self.hardware.gpu) && !has(self.hardware.numGpusPerNode)) || (has(self.hardware.gpu) && has(self.hardware.gpu.sku) && has(self.hardware.gpu.budget) && has(self.hardware.numGpusPerNode)))",message="hardware must be exactly empty or fully resolved"
 type DynamoGraphDeploymentRunSpec struct {
 	NativeSearchInput `json:",inline"`
 }

@@ -122,9 +122,10 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 		{
 			name: "v1beta2 unknown explicit SKU is preserved with a warning",
 			request: beta2DGDRForAdmission(func(request *nvidiacomv1beta2.DynamoGraphDeploymentRequest) {
-				sku, budget := "future_accelerator", int32(4)
+				sku, budget, width := "future_accelerator", int32(4), int32(2)
 				request.Spec.Hardware = &nvidiacomv1beta2.HardwareSpec{
-					GPU: &nvidiacomv1beta2.GPUHardwareSpec{SKU: &sku, Budget: &budget},
+					GPU:            &nvidiacomv1beta2.GPUHardwareSpec{SKU: &sku, Budget: &budget},
+					NumGPUsPerNode: &width,
 				}
 			}),
 			wantWarnings: []string{`spec.hardware.gpu.sku: "future_accelerator" is not known to the AISimulate release bundled with this operator; the value is passed through unchanged and may work with an external AISimulate systems catalog`},
@@ -571,17 +572,12 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 		{
 			name: "v1beta2 explicit hardware is kept",
 			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
-				spec["hardware"] = map[string]any{"gpu": map[string]any{"sku": "h100_sxm", "budget": int64(4)}}
+				spec["hardware"] = map[string]any{"gpu": map[string]any{"sku": "h100_sxm", "budget": int64(4)}, "numGpusPerNode": int64(4)}
 			}, nil),
 			gpuDiscovery: true,
 			discovered:   discoveredH200,
 			check: func(t *testing.T, result *unstructured.Unstructured) {
-				if got := v1beta2String(t, result, "spec", "hardware", "gpu", "sku"); got != "h100_sxm" {
-					t.Fatalf("hardware.gpu.sku = %q, want h100_sxm", got)
-				}
-				if got := v1beta2Number(t, result, "spec", "hardware", "gpu", "budget"); got != 4 {
-					t.Fatalf("hardware.gpu.budget = %v, want 4", got)
-				}
+				expectV1beta2GPUValues(t, result, "h100_sxm", 4, 4)
 			},
 		},
 		{
@@ -634,10 +630,10 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 		{
 			name: "v1beta2 removing only the budget rediscovers only the budget",
 			oldRequest: v1beta2DGDRForAdmission(func(spec map[string]any) {
-				spec["hardware"] = map[string]any{"gpu": map[string]any{"sku": "h100_sxm", "budget": int64(4)}}
+				spec["hardware"] = map[string]any{"gpu": map[string]any{"sku": "h100_sxm", "budget": int64(4)}, "numGpusPerNode": int64(8)}
 			}, nil),
 			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
-				spec["hardware"] = map[string]any{"gpu": map[string]any{"sku": "h100_sxm"}}
+				spec["hardware"] = map[string]any{"gpu": map[string]any{"sku": "h100_sxm"}, "numGpusPerNode": int64(8)}
 			}, nil),
 			gpuDiscovery: true,
 			discovered:   discoveredH200,
@@ -648,10 +644,10 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 		{
 			name: "v1beta2 removing only the SKU rediscovers only the SKU",
 			oldRequest: v1beta2DGDRForAdmission(func(spec map[string]any) {
-				spec["hardware"] = map[string]any{"gpu": map[string]any{"sku": "h100_sxm", "budget": int64(4)}}
+				spec["hardware"] = map[string]any{"gpu": map[string]any{"sku": "h100_sxm", "budget": int64(4)}, "numGpusPerNode": int64(8)}
 			}, nil),
 			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
-				spec["hardware"] = map[string]any{"gpu": map[string]any{"budget": int64(4)}}
+				spec["hardware"] = map[string]any{"gpu": map[string]any{"budget": int64(4)}, "numGpusPerNode": int64(8)}
 			}, nil),
 			gpuDiscovery: true,
 			discovered:   discoveredH200,
@@ -662,7 +658,7 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 		{
 			name: "v1beta2 removing all typed hardware rediscovers the SKU and the budget",
 			oldRequest: v1beta2DGDRForAdmission(func(spec map[string]any) {
-				spec["hardware"] = map[string]any{"gpu": map[string]any{"sku": "h100_sxm", "budget": int64(4)}}
+				spec["hardware"] = map[string]any{"gpu": map[string]any{"sku": "h100_sxm", "budget": int64(4)}, "numGpusPerNode": int64(8)}
 			}, nil),
 			request:      v1beta2DGDRForAdmission(nil, nil),
 			gpuDiscovery: true,
@@ -818,15 +814,14 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 			},
 		},
 		{
-			name: "v1beta2 an empty hardware object is automatic discovery",
+			name: "v1beta2 empty typed hardware leaves native parameters authoritative",
 			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
 				spec["hardware"] = map[string]any{}
+				setV1beta2SearchSpace(spec, map[string]any{"hardware_sku": "future_accelerator", "gpu_budget": int64(8)})
 			}, nil),
 			gpuDiscovery: true,
-			discovered:   gpu.GPUInfo{System: "h200_sxm", GPUsPerNode: 8, NodesWithGPUs: 1, TotalGPUs: 8, SelectedShapeGPUs: 8},
-			check: func(t *testing.T, result *unstructured.Unstructured) {
-				expectV1beta2GPUValues(t, result, "h200_sxm", 8)
-			},
+			discoveryErr: errors.New("the cluster must not be read"),
+			check:        expectV1beta2HardwareOptOut,
 		},
 		{
 			name: "v1beta2 a SKU alone keeps the SKU and persists the capped budget",
@@ -851,14 +846,14 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 			},
 		},
 		{
-			name: "v1beta2 a SKU and a budget are kept without reading the cluster",
+			name: "v1beta2 complete hardware is kept without reading the cluster",
 			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
-				spec["hardware"] = map[string]any{"gpu": map[string]any{"sku": "h100_sxm", "budget": int64(4)}}
+				spec["hardware"] = map[string]any{"gpu": map[string]any{"sku": "h100_sxm", "budget": int64(4)}, "numGpusPerNode": int64(4)}
 			}, nil),
 			gpuDiscovery: true,
 			discoveryErr: errors.New("the cluster must not be read"),
 			check: func(t *testing.T, result *unstructured.Unstructured) {
-				expectV1beta2GPUValues(t, result, "h100_sxm", 4)
+				expectV1beta2GPUValues(t, result, "h100_sxm", 4, 4)
 			},
 		},
 		{
@@ -879,7 +874,7 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 			discoveryErr: errors.New("no GPUs found"),
 			wantWebhook: []string{
 				"spec.hardware.gpu: Required value: the cluster's GPUs could not be discovered (no GPUs found); " +
-					"set spec.hardware.gpu.sku and spec.hardware.gpu.budget",
+					"set spec.hardware.gpu.sku, spec.hardware.gpu.budget, and spec.hardware.numGpusPerNode",
 			},
 		},
 		{
@@ -957,7 +952,7 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 			name: "v1beta2 explicit values are all kept",
 			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
 				spec["backends"] = []any{"vllm"}
-				spec["hardware"] = map[string]any{"gpu": map[string]any{"sku": "h100_sxm", "budget": int64(4)}}
+				spec["hardware"] = map[string]any{"gpu": map[string]any{"sku": "h100_sxm", "budget": int64(4)}, "numGpusPerNode": int64(4)}
 				spec["workload"] = map[string]any{"static": map[string]any{"isl": int64(10)}}
 				spec["objective"] = map[string]any{"mode": "Optimize", "metric": "TTFT"}
 				spec["aisimulate"] = map[string]any{
@@ -1471,6 +1466,7 @@ func expectV1beta2ExplicitValues(t *testing.T, obj *unstructured.Unstructured) {
 		value float64
 	}{
 		{[]string{"spec", "hardware", "gpu", "budget"}, 4},
+		{[]string{"spec", "hardware", "numGpusPerNode"}, 4},
 		{[]string{"spec", "workload", "static", "isl"}, 10},
 		{[]string{"spec", "recommendation", "maxCandidates"}, 3},
 	} {
@@ -1515,6 +1511,20 @@ func expectV1beta2AdmissionDefaults(t *testing.T, obj *unstructured.Unstructured
 	if got := v1beta2Number(t, obj, "spec", "hardware", "gpu", "budget"); got != 8 {
 		t.Fatalf("hardware.gpu.budget = %v, want 8", got)
 	}
+	if got := v1beta2Number(t, obj, "spec", "hardware", "numGpusPerNode"); got != 8 {
+		t.Fatalf("hardware.numGpusPerNode = %v, want 8", got)
+	}
+}
+
+func expectV1beta2HardwareOptOut(t *testing.T, obj *unstructured.Unstructured) {
+	t.Helper()
+	hardware, found, err := unstructured.NestedMap(obj.Object, "spec", "hardware")
+	if err != nil || !found || len(hardware) != 0 {
+		t.Fatalf("hardware = %#v, found %v, err %v; want exact empty-object opt-out", hardware, found, err)
+	}
+	if got := v1beta2String(t, obj, "spec", "aisimulate", "parameters", "search_space", "hardware_sku"); got != "future_accelerator" {
+		t.Fatalf("parameters.search_space.hardware_sku = %q, want future_accelerator", got)
+	}
 }
 
 // setV1beta2SearchSpace sets spec.aisimulate.parameters.search_space to searchSpace, replacing
@@ -1530,30 +1540,32 @@ func setV1beta2SearchSpace(spec map[string]any, searchSpace map[string]any) {
 
 // setBeta2AdmissionHardware names the hardware, so fixtures do not depend on GPU discovery.
 func setBeta2AdmissionHardware(request *nvidiacomv1beta2.DynamoGraphDeploymentRequest) {
-	sku, budget := "h100_sxm", int32(4)
+	sku, budget, width := "h100_sxm", int32(4), int32(4)
 	request.Spec.Hardware = &nvidiacomv1beta2.HardwareSpec{
-		GPU: &nvidiacomv1beta2.GPUHardwareSpec{SKU: &sku, Budget: &budget},
+		GPU:            &nvidiacomv1beta2.GPUHardwareSpec{SKU: &sku, Budget: &budget},
+		NumGPUsPerNode: &width,
 	}
 }
 
 // expectV1beta2GPU asserts the typed GPU hardware the API server stored.
-func expectV1beta2GPU(t *testing.T, result *unstructured.Unstructured, sku string, budget float64) {
-	t.Helper()
-	if got := v1beta2String(t, result, "spec", "hardware", "gpu", "sku"); got != sku {
-		t.Fatalf("hardware.gpu.sku = %q, want %q", got, sku)
-	}
-	if got := v1beta2Number(t, result, "spec", "hardware", "gpu", "budget"); got != budget {
-		t.Fatalf("hardware.gpu.budget = %v, want %v", got, budget)
-	}
+func expectV1beta2GPU(t *testing.T, result *unstructured.Unstructured, sku string, budget float64, width ...float64) {
+	expectV1beta2GPUValues(t, result, sku, budget, width...)
 }
 
 // expectV1beta2GPUValues checks the typed hardware a Request was stored with.
-func expectV1beta2GPUValues(t *testing.T, obj *unstructured.Unstructured, sku string, budget float64) {
+func expectV1beta2GPUValues(t *testing.T, obj *unstructured.Unstructured, sku string, budget float64, width ...float64) {
 	t.Helper()
 	if got := v1beta2String(t, obj, "spec", "hardware", "gpu", "sku"); got != sku {
 		t.Fatalf("hardware.gpu.sku = %q, want %q", got, sku)
 	}
 	if got := v1beta2Number(t, obj, "spec", "hardware", "gpu", "budget"); got != budget {
 		t.Fatalf("hardware.gpu.budget = %v, want %v", got, budget)
+	}
+	wantWidth := float64(8)
+	if len(width) > 0 {
+		wantWidth = width[0]
+	}
+	if got := v1beta2Number(t, obj, "spec", "hardware", "numGpusPerNode"); got != wantWidth {
+		t.Fatalf("hardware.numGpusPerNode = %v, want %v", got, wantWidth)
 	}
 }
