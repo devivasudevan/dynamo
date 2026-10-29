@@ -835,6 +835,20 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 			},
 		},
 		{
+			name: "v1beta2 explicit node width wins while admission discovers a missing budget",
+			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
+				spec["hardware"] = map[string]any{
+					"gpu":            map[string]any{"sku": "h200_sxm"},
+					"numGpusPerNode": int64(4),
+				}
+			}, nil),
+			gpuDiscovery: true,
+			discovered:   discoveredH200,
+			check: func(t *testing.T, result *unstructured.Unstructured) {
+				expectV1beta2GPUValues(t, result, "h200_sxm", 8, 4)
+			},
+		},
+		{
 			name: "v1beta2 a budget alone keeps the budget and discovers the SKU",
 			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
 				spec["hardware"] = map[string]any{"gpu": map[string]any{"budget": int64(4)}}
@@ -846,6 +860,19 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 			},
 		},
 		{
+			name: "v1beta2 explicit SKU and budget discover the missing node width",
+			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
+				spec["hardware"] = map[string]any{
+					"gpu": map[string]any{"sku": "h200_sxm", "budget": int64(4)},
+				}
+			}, nil),
+			gpuDiscovery: true,
+			discovered:   discoveredH200,
+			check: func(t *testing.T, result *unstructured.Unstructured) {
+				expectV1beta2GPUValues(t, result, "h200_sxm", 4, 8)
+			},
+		},
+		{
 			name: "v1beta2 complete hardware is kept without reading the cluster",
 			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
 				spec["hardware"] = map[string]any{"gpu": map[string]any{"sku": "h100_sxm", "budget": int64(4)}, "numGpusPerNode": int64(4)}
@@ -854,6 +881,18 @@ func TestDynamoGraphDeploymentRequestValidator_Validate(t *testing.T) {
 			discoveryErr: errors.New("the cluster must not be read"),
 			check: func(t *testing.T, result *unstructured.Unstructured) {
 				expectV1beta2GPUValues(t, result, "h100_sxm", 4, 4)
+			},
+		},
+		{
+			name: "v1beta2 unknown SKU without capacity or topology reports the manual override",
+			request: v1beta2DGDRForAdmission(func(spec map[string]any) {
+				spec["hardware"] = map[string]any{
+					"gpu": map[string]any{"sku": "future_accelerator"},
+				}
+			}, nil),
+			gpuDiscovery: true,
+			wantWebhook: []string{
+				`spec.hardware.gpu.budget: Required value: cannot discover GPU capacity or topology for SKU "future_accelerator" because it is not known to the bundled AISimulate catalog; set spec.hardware.gpu.budget and spec.hardware.numGpusPerNode explicitly`,
 			},
 		},
 		{
