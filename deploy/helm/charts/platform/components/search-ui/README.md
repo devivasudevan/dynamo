@@ -4,7 +4,9 @@ A browser UI for the DGDR v1beta2 search workflow. It watches
 `DynamoGraphDeploymentRequest`, `DynamoGraphDeploymentRun` and
 `DynamoGraphDeploymentCandidate` resources, keeps its own durable history of everything it
 observed, and offers one write action: creating an independent `DynamoGraphDeployment`
-from a Candidate.
+from a Candidate. It also lists every `DynamoGraphDeployment` and, for those the Planner
+retunes, shows how the deployed setting compares with the alternatives replayed on
+recorded traffic.
 
 The UI is read-only for Requests, Runs and Candidates. It runs as one Deployment with a
 ClusterIP Service and needs no ingress:
@@ -27,6 +29,45 @@ kubectl -n dynamo-system port-forward svc/dynamo-search-ui 8080:8080
 - Container logs of the Run's Job (`sweeper` and `publisher`), followed live while the pod
   exists and retained afterwards.
 - A timeline of observed Run status changes.
+- Every DGD, and for a DGD under [Planner live retune](../../../../../../docs/fern/pages/kubernetes/auto-deployment/planner-live-retune.md)
+  its retune windows (see [Deployments](#deployments)).
+
+## Deployments
+
+The Planner's live retune cuts a window of the frontends' request traces every
+`retune.interval_seconds`, replays it through DGDR v1beta2 Requests for a grid of router
+and Planner settings, and records its decision. The UI reads that and never takes part in
+it:
+
+| Source | What the UI takes from it |
+|--------|---------------------------|
+| Request labels `nvidia.com/planner-retune-*` | which DGD, window and shard a Run belongs to |
+| Candidates of those Runs | one evaluated point each: router knobs, Planner point, metrics |
+| Lease `<dgd>-planner-retune-state` | the deployed router setting, and per window the outcome and the deployed and best scores |
+
+For each DGD it shows:
+
+- **Headroom**: how much better the best replayed point scored than the deployed setting,
+  on the retune objective, per window and as a trend.
+- **One window**: every replayed point on two metrics of your choice, the Pareto front
+  over them, the point that was deployed during the window and the point the decision
+  chose. The front is computed in the browser from the selected metrics; a metric whose
+  name ends in `_ms` or names a latency counts as lower-is-better.
+
+Limits:
+
+- The scores are AISimulate replays of recorded traffic, not measurements.
+- The search covers what the Planner searches: three KV-router knobs and Planner
+  parameters. Replica counts and parallelism are those of the DGD.
+- A DGD without live retune is listed without a comparison. The UI starts no searches.
+- The deployed point of a window is derived from the decision history. It is unknown for
+  the first applied decision the UI knows and after a rollback, unless the window has a
+  `point-baseline` shard.
+- With a Planner search several points share one router setting, and all of them are
+  marked as deployed or chosen.
+
+The Planner deletes the Requests of old windows (`retune.dgdr.keep_requests`) and its
+Lease keeps 50 decisions. With a history backend the UI keeps every window it observed.
 
 ## History
 
@@ -40,6 +81,7 @@ observes so that history stays available:
 | `runs/{ns}/{uid}/status/{ts}.json` | one sample per observed status change |
 | `runs/{ns}/{uid}/candidates/{name}.json` | every Candidate ever observed |
 | `runs/{ns}/{uid}/logs/{container}.log` | Job container output |
+| `retune/{ns}/{dgdUID}/decisions/{id}.json` | every Planner retune decision observed |
 
 Backends (`history.backend`):
 
@@ -106,6 +148,8 @@ not granted.
 | `dynamographdeploymentrequests`, `...runs`, `...candidates` | get, list, watch | the views |
 | `pods` | get, list, watch | find the Run's Job pod |
 | `pods/log` | get | stream container logs |
-| `dynamographdeployments` | get, create | `POST /api/v1/dgd` (only with `dgdCreate.enabled`) |
+| `dynamographdeployments` | get, list, watch | the Deployments view |
+| `leases` (`coordination.k8s.io`) | get, list, watch | the Planner retune state; only Leases labeled `nvidia.com/planner-retune-dgd-uid` are cached |
+| `dynamographdeployments` | create | `POST /api/v1/dgd` (only with `dgdCreate.enabled`) |
 
 With `watchNamespace` set the grants are a namespaced Role; otherwise a ClusterRole.

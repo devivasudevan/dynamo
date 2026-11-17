@@ -36,6 +36,10 @@ code, pre, .mono { font-family: var(--font-mono); }
 }
 .logo { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 15px; color: var(--accent); }
 .sep { width: 1px; height: 20px; background: var(--border); }
+.nav { display: flex; gap: 2px; }
+.nav a { padding: 5px 10px; border-radius: 6px; font-size: 13px; font-weight: 500; color: var(--fg-dim); }
+.nav a:hover { color: var(--fg); background: var(--surface2); }
+.nav a.active { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .topbar label { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--fg-dimmer); }
 select, input[type=text] {
   font: 13px var(--font-mono); color: var(--fg); background: var(--surface2);
@@ -99,6 +103,7 @@ select:focus, input:focus { border-color: var(--accent); }
 
 .h { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--fg-dimmer); margin: 22px 0 10px; display: flex; align-items: center; gap: 10px; }
 .h:first-child { margin-top: 0; }
+.h .note { text-transform: none; letter-spacing: 0; font-weight: 400; }
 .h .right { margin-left: auto; display: flex; gap: 8px; align-items: center; text-transform: none; letter-spacing: 0; font-weight: 400; }
 .note { font-size: 12px; color: var(--fg-dimmer); }
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
@@ -159,6 +164,7 @@ table.grid th.num { text-align: right; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
 @media (max-width: 760px) {
+  .topbar { height: auto; flex-wrap: wrap; padding: 8px 16px; }
   .main { flex-direction: column; }
   .sidebar { width: 100%; max-height: 220px; border-right: none; border-bottom: 1px solid var(--border); }
   .inner { padding: 14px 16px 40px; }
@@ -174,6 +180,8 @@ table.grid th.num { text-align: right; }
       <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="9" width="4" height="9" rx="1" fill="currentColor"/><rect x="8" y="5" width="4" height="13" rx="1" fill="currentColor" opacity=".8"/><rect x="14" y="1" width="4" height="17" rx="1" fill="currentColor" opacity=".55"/></svg>
       Dynamo Search
     </a>
+    <div class="sep"></div>
+    <nav class="nav" aria-label="Sections"><a href="#runs" id="nav-runs">Searches</a><a href="#deployments" id="nav-deployments">Deployments</a></nav>
     <div class="sep"></div>
     <label for="ns">namespace</label>
     <select id="ns" aria-label="Namespace"><option value="">all</option></select>
@@ -214,7 +222,7 @@ const validChip = c => c.valid === 'True' ? chip('Valid', 'ok') : c.valid === 'F
 const stateChip = c => c.retired ? chip(c.retiredReason === 'run deleted' ? 'retained' : 'superseded', 'muted') : c.rank ? chip('published', 'ok') : chip('observed', 'muted');
 function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 1800); }
 async function copyText(text) { try { await navigator.clipboard.writeText(text); toast('Copied'); } catch { toast('Copy failed; select the text instead'); } }
-function ago(iso) { if (!iso) return '—'; const s = (Date.now() - new Date(iso)) / 1000; if (s < 90) return Math.round(s)+'s ago'; if (s < 5400) return Math.round(s/60)+'m ago'; if (s < 172800) return Math.round(s/3600)+'h ago'; return Math.round(s/86400)+'d ago'; }
+function ago(iso) { if (!iso) return '—'; const s = Math.max(0, (Date.now() - new Date(iso)) / 1000); if (s < 90) return Math.round(s)+'s ago'; if (s < 5400) return Math.round(s/60)+'m ago'; if (s < 172800) return Math.round(s/3600)+'h ago'; return Math.round(s/86400)+'d ago'; }
 
 // Minimal YAML emitter for the DGD and AISimulate input views.
 function yaml(v, ind = 0) {
@@ -272,6 +280,9 @@ function parseHash() {
   const p = h.split('/');
   if (p[0] === 'run' && p.length >= 3) return { view: 'run', ns: p[1], name: p[2], tab: p[3] || S.tab };
   if (p[0] === 'candidate' && p.length >= 3) return { view: 'candidate', ns: p[1], name: p[2] };
+  if (p[0] === 'deployments') return { view: 'deployments' };
+  if (p[0] === 'deployment' && p.length >= 3) return { view: 'deployment', ns: p[1], name: p[2] };
+  if (p[0] === 'window' && p.length >= 4) return { view: 'window', ns: p[1], name: p[2], window: p[3] };
   return { view: 'runs' };
 }
 async function route() {
@@ -280,8 +291,13 @@ async function route() {
   try {
     if (S.route.view === 'run') { S.tab = S.route.tab || 'overview'; await renderRun(); }
     else if (S.route.view === 'candidate') await renderCandidate();
+    else if (S.route.view === 'deployments') await renderDeployments();
+    else if (S.route.view === 'deployment') await renderDeployment();
+    else if (S.route.view === 'window') await renderWindow();
     else renderOverview();
   } catch (e) { $('content').innerHTML = `<div class="empty"><b>Could not load</b>${esc(e.message)}</div>`; }
+  const dep = ['deployments', 'deployment', 'window'].includes(S.route.view);
+  $('nav-deployments').classList.toggle('active', dep); $('nav-runs').classList.toggle('active', !dep);
   renderSidebar();
 }
 window.addEventListener('hashchange', route);
@@ -302,7 +318,13 @@ function renderSidebar() {
   const runs = S.requests.reduce((n, r) => n + r.runs.length, 0);
   $('side-count').textContent = runs ? runs + ' runs' : '';
   if (!S.requests.length) { side.innerHTML = '<div class="empty" style="padding:24px 16px"><b>No requests</b>Create a DynamoGraphDeploymentRequest to start a search.</div>'; return; }
-  side.innerHTML = S.requests.map(req => `
+  const folded = {};
+  S.requests.filter(r => r.retune).forEach(r => { const k = r.namespace + '/' + r.retune.dgd; (folded[k] ||= { ns: r.namespace, dgd: r.retune.dgd, runs: 0 }).runs += r.runs.length; });
+  side.innerHTML = Object.values(folded).map(g => `
+    <div class="req">
+      <div class="req-head"><span class="req-name" title="Planner retune of ${esc(g.dgd)}">retune · ${esc(g.dgd)}</span><span class="req-ns">${esc(g.ns)}</span></div>
+      <a class="run-item${['deployment', 'window'].includes(S.route?.view) && S.route.ns === g.ns && S.route.name === g.dgd ? ' active' : ''}" href="${depHref(g.ns, g.dgd)}"><span class="name">${g.runs} window run${g.runs === 1 ? '' : 's'}</span>${chip('planner', 'info')}</a>
+    </div>`).join('') + S.requests.filter(r => !r.retune).map(req => `
     <div class="req">
       <div class="req-head"><span class="req-name" title="${esc(req.name)}">${esc(req.name)}</span><span class="req-ns">${esc(req.namespace)}</span>${req.live ? '' : chip('retained', 'muted')}</div>
       ${req.runs.map(r => {
@@ -315,7 +337,8 @@ function renderSidebar() {
 
 // ---------- overview ----------
 function renderOverview() {
-  const rows = S.requests.flatMap(req => req.runs.map(r => ({ req, r })));
+  const rows = S.requests.filter(req => !req.retune).flatMap(req => req.runs.map(r => ({ req, r })));
+  const retuneRuns = S.requests.filter(req => req.retune).reduce((n, req) => n + req.runs.length, 0);
   $('content').innerHTML = `
     <div class="title"><h1 style="font-family:var(--font-ui)">Runs</h1>${S.ns ? chip(S.ns, 'muted') : ''}</div>
     ${rows.length ? `<div class="panel wrap" style="padding:0"><table class="grid">
@@ -327,7 +350,8 @@ function renderOverview() {
         <td class="num">${r.published}${r.maxCandidates ? '<small style="color:var(--fg-dimmer)">/' + r.maxCandidates + '</small>' : ''}</td>
         <td>${phaseChip(r.phase)}${r.retained ? ' ' + chip('retained','muted') : ''}</td>
         <td class="num note">${ago(r.startTime)}</td><td class="num note">${esc(r.duration || '—')}</td></tr>`).join('')}
-    </table></div>` : '<div class="empty"><b>No runs yet</b>Runs appear here as soon as a Request is accepted.</div>'}`;
+    </table></div>` : '<div class="empty"><b>No runs yet</b>Runs appear here as soon as a Request is accepted.</div>'}
+    ${retuneRuns ? `<p class="note">${retuneRuns} Planner retune run${retuneRuns === 1 ? ' is' : 's are'} grouped by window under <a href="#deployments" style="text-decoration:underline">Deployments</a>.</p>` : ''}`;
 }
 
 // ---------- run detail ----------
@@ -341,7 +365,7 @@ async function renderRun() {
   const evDone = ev ? ev.feasible + ev.infeasible + ev.failed + ev.unsupported : 0;
   const tabs = [['overview','Overview'],['candidates','Candidates',r.candidates.length],['input','AISimulate input'],['log','Log'],['timeline','Timeline',r.samples?.length||0]];
   c.innerHTML = `
-    <div class="crumb"><a href="#runs">Runs</a> / ${esc(r.namespace)} / ${esc(r.request || '—')}</div>
+    <div class="crumb"><a href="#runs">Runs</a> / ${esc(r.namespace)} / ${esc(r.request || '—')}${r.retune ? ` · <a href="#window/${esc(r.namespace)}/${esc(r.retune.dgd)}/${r.retune.windowEndMs}">retune window of ${esc(r.retune.dgd)}</a>` : ''}</div>
     <div class="title"><h1>${esc(r.name)}</h1>${phaseChip(r.phase)}${modeChip(r.mode)}${r.retained ? chip('retained · deleted ' + ago(r.deletedAt), 'muted') : ''}</div>
     <div class="sub">${esc(r.model || '')}${r.hardwareSku ? ' · ' + esc(r.hardwareSku) : ''}${r.backends?.length ? ' · ' + esc(r.backends.join(', ')) : ''}${r.metric ? ' · optimize ' + esc(r.metric) : ''}</div>
     <div class="stats">
@@ -556,11 +580,185 @@ async function submitDGD(dryRun) {
   } catch (e) { out.className = 'result err'; out.textContent = e.message; }
 }
 
+// ---------- deployments ----------
+// Planner live retune replays each window of recorded traffic against alternative router
+// and planner settings. These views show where the deployed setting stands among them.
+const KNOB_LABEL = { overlap_score_credit: 'overlap credit', prefill_load_scale: 'prefill scale', router_temperature: 'temperature' };
+const OUTCOME_CLS = { applied: 'ok', promoted: 'ok', kept: 'muted', advisory: 'info', failed: 'err', timeout: 'err', busy: 'warn', stale: 'warn', rolled_back: 'warn' };
+const fnum = v => v == null ? '—' : Math.abs(v) >= 100 ? v.toLocaleString(undefined, { maximumFractionDigits: 1 }) : String(+v.toPrecision(4));
+const fmtAt = ms => ms ? new Date(ms).toISOString().replace('T', ' ').slice(0, 16) + ' UTC' : '—';
+const knobs = p => p && Object.keys(p).length ? Object.keys(p).sort().map(k => `${esc(KNOB_LABEL[k] || k)} <b>${fnum(p[k])}</b>`).join(' · ') : '—';
+const outcomeChip = d => d ? chip(d.outcome.replace('_', ' '), OUTCOME_CLS[d.outcome] || 'muted') : chip('no decision', 'muted');
+const depHref = (ns, name) => `#deployment/${esc(ns)}/${esc(name)}`;
+// Headroom is how far the best replayed alternative beat the deployed setting.
+function headroom(d) {
+  if (!d || d.headroomPct == null) return '<span class="note">—</span>';
+  const h = d.headroomPct;
+  if (h < 0.05) return `<span style="color:var(--ok)">at best</span>`;
+  return `<span style="color:${h >= 5 ? 'var(--warn)' : 'var(--fg)'}">+${h.toFixed(1)}%</span>`;
+}
+const retuneChip = r => !r ? chip('no retune', 'muted') : r.mode ? chip('retune · ' + r.mode, r.mode === 'active' ? 'ok' : 'info') : chip('retune history', 'muted');
+
+async function renderDeployments() {
+  const list = await api('/api/v1/deployments' + (S.ns ? '?namespace=' + encodeURIComponent(S.ns) : ''));
+  $('content').innerHTML = `
+    <div class="title"><h1 style="font-family:var(--font-ui)">Deployments</h1>${S.ns ? chip(S.ns, 'muted') : ''}</div>
+    <div class="sub">Every DynamoGraphDeployment. Headroom compares the deployed setting with the best alternative replayed on the last window of recorded traffic.</div>
+    ${list.length ? `<div class="panel wrap" style="padding:0"><table class="grid">
+      <tr><th>Deployment</th><th>State</th><th>Components</th><th>Retune</th><th>Last decision</th><th class="num" title="How much better the best replayed alternative scored than the deployed setting">Headroom</th><th class="num">Windows</th></tr>
+      ${list.map(d => `<tr class="row" onclick="location.hash='deployment/${esc(d.namespace)}/${esc(d.name)}'">
+        <td><div class="mono" style="font-size:12px">${esc(d.name)}</div><div class="note">${esc(d.namespace)}</div></td>
+        <td>${d.live ? chip(d.state || 'unknown', d.state === 'Ready' || d.state === 'successful' ? 'ok' : 'warn') : chip('deleted', 'muted')}</td>
+        <td class="note">${(d.components || []).map(c => esc(c.name) + (c.replicas != null ? ' ×' + c.replicas : '')).join(' · ') || '—'}</td>
+        <td>${retuneChip(d.retune)}${d.retune?.objective ? ' <span class="note">' + esc(d.retune.objective) + '</span>' : ''}</td>
+        <td>${d.retune?.latest ? outcomeChip(d.retune.latest) + ' <span class="note">' + ago(d.retune.latest.atMs) + '</span>' : '<span class="note">—</span>'}</td>
+        <td class="num">${headroom(d.retune?.latest)}</td>
+        <td class="num">${d.retune ? d.retune.windows : '—'}</td></tr>`).join('')}
+    </table></div>` : '<div class="empty"><b>No deployments</b>No DynamoGraphDeployment exists in this scope.</div>'}`;
+}
+
+async function renderDeployment() {
+  const { ns, name } = S.route;
+  const d = await api(`/api/v1/deployments/${encodeURIComponent(ns)}/${encodeURIComponent(name)}`);
+  S.dep = d;
+  const r = d.retune;
+  const head = `
+    <div class="crumb"><a href="#deployments">Deployments</a> / ${esc(ns)}</div>
+    <div class="title"><h1>${esc(d.name)}</h1>${d.live ? chip(d.state || 'unknown', d.state === 'Ready' || d.state === 'successful' ? 'ok' : 'warn') : chip('deleted', 'muted')}${retuneChip(r)}</div>
+    <div class="sub">${(d.components || []).map(c => esc(c.name) + (c.type ? ' (' + esc(c.type) + ')' : '') + (c.replicas != null ? ' ×' + c.replicas : '')).join(' · ')}</div>`;
+  if (!r) {
+    $('content').innerHTML = head + `<div class="empty"><b>No retune data</b>The Planner's live retune has not replayed traffic for this deployment. Enable it in advisory mode to compare the deployed setting with alternatives without changing anything.</div>`;
+    return;
+  }
+  $('content').innerHTML = head + `
+    <div class="stats">
+      <div class="stat"><div class="k">Objective</div><div class="v text">${esc(r.objective || '—')}</div></div>
+      <div class="stat"><div class="k">Headroom, last window</div><div class="v">${headroom(r.latest)}</div></div>
+      <div class="stat"><div class="k">Last decision</div><div class="v text">${r.latest ? outcomeChip(r.latest) + ' ' + ago(r.latest.atMs) : '—'}</div></div>
+      <div class="stat"><div class="k">Windows</div><div class="v">${r.windows}</div></div>
+    </div>
+    <div class="h">Deployed router setting ${r.mode ? '' : '<span class="note">the planner state is gone; this is history only</span>'}</div>
+    <div class="panel" style="font-size:13px">${r.current ? knobs(r.current) : '<span class="note">not reported</span>'}</div>
+    <div class="h">Deployed against best alternative <span class="note">planner score per window · ${r.maximize ? 'higher' : 'lower'} is better</span></div>
+    ${trendChart(d)}
+    <div class="h">Windows</div>
+    ${d.windows.length ? `<div class="panel wrap" style="padding:0"><table class="grid">
+      <tr><th>Window end</th><th>Decision</th><th class="num">Deployed</th><th class="num">Best</th><th class="num">Headroom</th><th>Chosen setting</th><th class="num">Runs</th></tr>
+      ${d.windows.map(w => { const x = w.decision; return `<tr class="row" onclick="location.hash='window/${esc(ns)}/${esc(name)}/${w.windowEndMs}'">
+        <td class="mono" style="font-size:12px">${fmtAt(w.windowEndMs)}</td>
+        <td>${outcomeChip(x)}${x?.failureReason ? ' <span class="note">' + esc(x.failureReason) + '</span>' : ''}</td>
+        <td class="num">${fnum(x?.baseline)}</td><td class="num">${fnum(x?.best)}</td><td class="num">${headroom(x)}</td>
+        <td class="note">${x && (x.outcome === 'applied' || x.outcome === 'advisory') ? knobs(x.chosen) : '—'}</td>
+        <td class="num">${w.runs?.length || '<span class="note">gone</span>'}</td></tr>`; }).join('')}
+    </table></div>` : '<div class="note">No window has been replayed yet.</div>'}
+    ${d.events?.length ? `<div class="h">Other events</div><div class="panel kv">${d.events.map(e => `<span class="k">${fmtAt(e.atMs)}</span><span class="v">${esc(e.outcome.replace('_', ' '))}${e.chosen ? ' → ' + knobs(e.chosen) : ''}</span>`).join('')}</div>` : ''}`;
+}
+
+// Deployed and best score per window, oldest first. The gap between the lines is the
+// headroom; where they touch, the deployed setting was the best one replayed.
+function trendChart(d) {
+  const ws = d.windows.filter(w => w.decision?.baseline != null && w.decision?.best != null).reverse();
+  if (ws.length < 2) return `<div class="note">${ws.length ? 'One scored window so far; the trend needs two.' : 'No window has both a deployed and a best score yet.'}</div>`;
+  const W = 920, H = 220, L = 70, R = 20, T = 14, B = 34;
+  const vals = ws.flatMap(w => [w.decision.baseline, w.decision.best]);
+  let lo = Math.min(...vals), hi = Math.max(...vals); const pad = (hi - lo) * .1 || Math.abs(hi) * .05 || 1; lo -= pad; hi += pad;
+  const X = i => L + i * (W - L - R) / (ws.length - 1), Y = v => T + (H - T - B) * (1 - (v - lo) / (hi - lo));
+  const line = (key, color) => `<polyline fill="none" stroke="${color}" stroke-width="2" points="${ws.map((w, i) => X(i) + ',' + Y(w.decision[key])).join(' ')}"/>` +
+    ws.map((w, i) => `<circle class="pt" cx="${X(i)}" cy="${Y(w.decision[key])}" r="4" fill="${color}" stroke="var(--surface)" stroke-width="2" onclick="location.hash='window/${esc(d.namespace)}/${esc(d.name)}/${w.windowEndMs}'"><title>${fmtAt(w.windowEndMs)}\n${key === 'best' ? 'best' : 'deployed'} ${fnum(w.decision[key])}</title></circle>`).join('');
+  const yt = [0, .5, 1].map(t => { const v = lo + t * (hi - lo); return `<line class="axis" x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}" opacity=".5"/><text x="${L - 8}" y="${Y(v) + 3}" text-anchor="end">${fnum(v)}</text>`; }).join('');
+  const step = Math.ceil(ws.length / 6);
+  const xt = ws.map((w, i) => i % step ? '' : `<text x="${X(i)}" y="${H - B + 16}" text-anchor="middle">${new Date(w.windowEndMs).toISOString().slice(5, 16).replace('T', ' ')}</text>`).join('');
+  return `<div class="chart"><div class="cap"><span>Click a point to open its window</span>
+    <span class="legend"><span><i style="background:var(--accent)"></i>best alternative</span><span><i style="background:var(--info)"></i>deployed</span></span></div>
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Deployed and best score per retune window">${yt}${xt}${line('best', 'var(--accent)')}${line('baseline', 'var(--info)')}</svg></div>`;
+}
+
+// ---------- one retune window ----------
+const lowerBetter = (k, w) => k === 'score' ? !w.maximize : /(_ms$|latency|ttft|itl|gpu_hours|duration)/.test(k);
+const pval = (p, k) => k === 'score' ? p.score : p.metrics?.[k];
+// The nondominated points over two metrics, each with its own better direction.
+function paretoFront(pts, kx, ky, w) {
+  const sx = lowerBetter(kx, w) ? -1 : 1, sy = lowerBetter(ky, w) ? -1 : 1;
+  const v = pts.map(p => [sx * pval(p, kx), sy * pval(p, ky)]);
+  return pts.filter((_, i) => !v.some((q, j) => j !== i && q[0] >= v[i][0] && q[1] >= v[i][1] && (q[0] > v[i][0] || q[1] > v[i][1])));
+}
+async function renderWindow() {
+  const { ns, name, window } = S.route;
+  const w = await api(`/api/v1/deployments/${encodeURIComponent(ns)}/${encodeURIComponent(name)}/windows/${window}`);
+  S.win = w;
+  const x = w.decision;
+  const keys = ['score', ...[...new Set(w.points.flatMap(p => Object.keys(p.metrics || {})))].sort()];
+  const kx = S.wx && keys.includes(S.wx) ? S.wx : keys.includes('mean_ttft_ms') ? 'mean_ttft_ms' : keys[1] || 'score';
+  const ky = S.wy && keys.includes(S.wy) ? S.wy : 'score';
+  const pts = w.points.filter(p => pval(p, kx) != null && pval(p, ky) != null);
+  const front = new Set(paretoFront(pts, kx, ky, w).map(p => p.candidate));
+  const deployed = pts.filter(p => p.deployed);
+  const standing = !pts.length ? '—' : !deployed.length ? '<small>deployed point not identified</small>'
+    : deployed.some(p => front.has(p.candidate)) ? '<span style="color:var(--ok)">on the front</span>' : '<span style="color:var(--warn)">dominated</span>';
+  const hasPlanner = w.points.some(p => p.planner);
+  const sorted = [...w.points].sort((a, b) => (a.score == null) - (b.score == null) || (w.maximize ? b.score - a.score : a.score - b.score));
+  const flags = p => (p.deployed ? chip('deployed', 'info') + ' ' : '') + (p.chosen ? chip('chosen', 'ok') + ' ' : '') + (front.has(p.candidate) ? chip('front', 'pareto') : '');
+  $('content').innerHTML = `
+    <div class="crumb"><a href="#deployments">Deployments</a> / ${esc(ns)} / <a href="${depHref(ns, name)}">${esc(name)}</a></div>
+    <div class="title"><h1 style="font-family:var(--font-ui)">Window ending ${fmtAt(w.windowEndMs)}</h1>${outcomeChip(x)}</div>
+    <div class="sub">Every point is one router${hasPlanner ? ' and planner' : ''} setting replayed by AISimulate on this window's recorded traffic. Scores are simulated, not measured.</div>
+    <div class="stats">
+      <div class="stat"><div class="k">Objective</div><div class="v text">${esc(w.objective || '—')}</div></div>
+      <div class="stat"><div class="k">Points replayed</div><div class="v">${w.points.length}</div></div>
+      <div class="stat"><div class="k">Planner score, deployed</div><div class="v">${fnum(x?.baseline)}</div></div>
+      <div class="stat"><div class="k">Planner score, best</div><div class="v">${fnum(x?.best)}</div></div>
+      <div class="stat"><div class="k">Headroom</div><div class="v">${headroom(x)}</div></div>
+      <div class="stat"><div class="k">Deployed setting is</div><div class="v text">${standing}</div></div>
+    </div>
+    ${x?.reason ? `<div class="notice"><b>i</b><span>${esc(x.reason)}</span></div>` : ''}
+    ${w.deployed ? `<div class="h">Deployed during this window</div><div class="panel" style="font-size:13px">${knobs(w.deployed)}</div>` : ''}
+    <div class="h">Pareto front</div>
+    ${w.points.length ? `<p class="note" style="margin:-4px 0 10px">Points use each Candidate's own AISimulate score. ${/^Goodput/.test(w.objective || '') ? 'The Planner rescales Goodput scores by replay duration over the window, so its scores above are in other units; the ranking can differ slightly.' : 'The Planner scores above use the same values.'}</p>` : ''}
+    ${w.points.length ? windowChart(w, pts, front, keys, kx, ky) : `<div class="empty"><b>No points retained</b>The Runs of this window were deleted before this UI observed them, so only the Planner's decision is available.</div>`}
+    ${w.points.length ? `<div class="h">Points <span class="note">best score first</span></div><div class="panel wrap" style="padding:0"><table class="grid">
+      <tr><th>Router setting</th>${hasPlanner ? '<th>Planner point</th>' : ''}<th class="num">Candidate score</th><th class="num">${esc(label(kx))}</th>${ky !== 'score' ? `<th class="num">${esc(label(ky))}</th>` : ''}<th></th><th>Shard</th></tr>
+      ${sorted.map(p => `<tr class="row" onclick="location.hash='candidate/${esc(p.namespace)}/${esc(p.candidate)}'">
+        <td style="font-size:12px">${knobs(p.router)}</td>${hasPlanner ? `<td class="mono note">${esc(p.planner ? JSON.stringify(p.planner) : '—')}</td>` : ''}
+        <td class="num">${fnum(p.score)}</td><td class="num">${fnum(pval(p, kx))}</td>${ky !== 'score' ? `<td class="num">${fnum(pval(p, ky))}</td>` : ''}
+        <td>${flags(p)}</td><td class="note mono">${esc(p.shard || '')}</td></tr>`).join('')}
+    </table></div>` : ''}
+    ${w.runs?.length ? `<div class="h">Runs</div><div class="panel kv">${w.runs.map(r => `<span class="k">${esc(r.shard)}${r.attempt > 1 ? ' · attempt ' + r.attempt : ''}</span><span class="v"><a href="#run/${esc(ns)}/${esc(r.name)}" style="text-decoration:underline">${esc(r.name)}</a> ${phaseChip(r.phase)}${r.retained ? ' ' + chip('retained', 'muted') : ''}</span>`).join('')}</div>` : ''}`;
+}
+function windowChart(w, pts, front, keys, kx, ky) {
+  if (!pts.length) return '<div class="note">No point carries both selected metrics.</div>';
+  const W = 920, H = 320, L = 76, R = 24, T = 16, B = 46;
+  const range = k => { const v = pts.map(p => pval(p, k)); let lo = Math.min(...v), hi = Math.max(...v); const pad = (hi - lo) * .08 || Math.abs(hi) * .05 || 1; return [lo - pad, hi + pad]; };
+  const [xmin, xmax] = range(kx), [ymin, ymax] = range(ky);
+  const X = v => L + (v - xmin) / (xmax - xmin) * (W - L - R), Y = v => T + (H - T - B) * (1 - (v - ymin) / (ymax - ymin));
+  const ticks = [0, .25, .5, .75, 1].map(t => `<text x="${X(xmin + t * (xmax - xmin))}" y="${H - B + 16}" text-anchor="middle">${fnum(xmin + t * (xmax - xmin))}</text>
+    <line class="axis" x1="${L}" x2="${W - R}" y1="${Y(ymin + t * (ymax - ymin))}" y2="${Y(ymin + t * (ymax - ymin))}" opacity=".4"/><text x="${L - 8}" y="${Y(ymin + t * (ymax - ymin)) + 3}" text-anchor="end">${fnum(ymin + t * (ymax - ymin))}</text>`).join('');
+  const opts = k => keys.map(o => `<option value="${esc(o)}"${o === k ? ' selected' : ''}>${esc(label(o))}</option>`).join('');
+  const dir = k => lowerBetter(k, w) ? 'lower is better' : 'higher is better';
+  const line = pts.filter(p => front.has(p.candidate)).sort((a, b) => pval(a, kx) - pval(b, kx));
+  const dot = p => {
+    const cx = X(pval(p, kx)), cy = Y(pval(p, ky)), on = front.has(p.candidate);
+    const ring = p.deployed ? `<circle cx="${cx}" cy="${cy}" r="11" fill="none" stroke="var(--info)" stroke-width="2.5"/>` : p.chosen ? `<circle cx="${cx}" cy="${cy}" r="11" fill="none" stroke="var(--ok)" stroke-width="2.5" stroke-dasharray="4 3"/>` : '';
+    return `${ring}<circle class="pt" cx="${cx}" cy="${cy}" r="${on ? 6 : 4}" fill="${on ? 'var(--pareto)' : 'var(--fg-dimmer)'}" stroke="var(--surface)" stroke-width="1.5" opacity="${on ? 1 : .7}" onclick="location.hash='candidate/${esc(p.namespace)}/${esc(p.candidate)}'"><title>${Object.keys(p.router || {}).sort().map(k => (KNOB_LABEL[k] || k) + ' ' + fnum(p.router[k])).join('\n')}\n${esc(label(ky))} ${fnum(pval(p, ky))}\n${esc(label(kx))} ${fnum(pval(p, kx))}${p.deployed ? '\ndeployed' : ''}${p.chosen ? '\nchosen' : ''}</title></circle>`;
+  };
+  // Rings go last so a deployed point under a cluster stays visible.
+  const order = [...pts].sort((a, b) => (a.deployed || a.chosen ? 1 : 0) - (b.deployed || b.chosen ? 1 : 0));
+  return `<div class="chart"><div class="cap">
+    <span class="legend"><span><i style="background:var(--pareto)"></i>on the front</span><span><i style="background:var(--fg-dimmer)"></i>dominated</span><span><i style="background:none;border:2px solid var(--info)"></i>deployed</span><span><i style="background:none;border:2px dashed var(--ok)"></i>chosen</span></span>
+    <span>y <select onchange="S.wy=this.value;renderWindow()">${opts(ky)}</select> &nbsp; x <select onchange="S.wx=this.value;renderWindow()">${opts(kx)}</select></span></div>
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Replayed settings of this window with their Pareto front">
+      <line class="axis" x1="${L}" x2="${L}" y1="${T}" y2="${H - B}"/><line class="axis" x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}"/>${ticks}
+      <text x="${(L + W - R) / 2}" y="${H - 6}" text-anchor="middle">${esc(label(kx))} · ${dir(kx)}</text>
+      <text transform="translate(14 ${(T + H - B) / 2}) rotate(-90)" text-anchor="middle">${esc(label(ky))} · ${dir(ky)}</text>
+      <polyline fill="none" stroke="var(--pareto)" stroke-dasharray="5 4" opacity=".7" points="${line.map(p => X(pval(p, kx)) + ',' + Y(pval(p, ky))).join(' ')}"/>
+      ${order.map(dot).join('')}
+    </svg></div>`;
+}
+
 // ---------- boot ----------
 (function boot() {
   try { const t = localStorage.getItem('theme'); if (t) document.documentElement.setAttribute('data-theme', t); } catch {}
   $('theme').onclick = () => { const next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light'; document.documentElement.setAttribute('data-theme', next); try { localStorage.setItem('theme', next); } catch {} };
-  $('ns').onchange = async e => { S.ns = e.target.value; await loadRequests(); if (S.route?.view === 'runs') renderOverview(); else renderSidebar(); };
+  $('ns').onchange = async e => { S.ns = e.target.value; await loadRequests(); if (S.route?.view === 'runs' || S.route?.view === 'deployments') route(); else renderSidebar(); };
   loadNamespaces().then(loadRequests).then(route).catch(e => { $('content').innerHTML = `<div class="empty"><b>Cannot reach the server</b>${esc(e.message)}</div>`; });
   connect();
 })();

@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/ai-dynamo/dynamo/deploy/operator/internal/searchui/history"
 )
 
 // RequestView is one DynamoGraphDeploymentRequest with its Runs.
@@ -22,6 +24,8 @@ type RequestView struct {
 	Live       bool        `json:"live"`
 	Conditions []condition `json:"conditions,omitempty"`
 	Runs       []RunView   `json:"runs"`
+	// Retune is set on a Request the planner's live retune created.
+	Retune *history.RetuneRef `json:"retune,omitempty"`
 }
 
 // RunView is the list and header representation of one Run.
@@ -50,6 +54,8 @@ type RunView struct {
 	Retained         bool        `json:"retained"`
 	FirstSeen        string      `json:"firstSeen,omitempty"`
 	DeletedAt        string      `json:"deletedAt,omitempty"`
+	// Retune is set on a Run of a planner live-retune window.
+	Retune *history.RetuneRef `json:"retune,omitempty"`
 }
 
 // EvalView mirrors status.progress.evaluations.
@@ -170,6 +176,7 @@ func runView(entry *runEntry) RunView {
 		Retained:         !entry.live,
 		FirstSeen:        formatTime(&entry.env.FirstSeen),
 		DeletedAt:        formatTime(entry.env.DeletedAt),
+		Retune:           entry.env.Retune,
 	}
 	if v.Phase == "" {
 		v.Phase = "Pending"
@@ -393,6 +400,7 @@ func (ix *Index) ListRequests(namespace string) []RequestView {
 			Mode:       str(obj, "spec", "objective", "mode"),
 			ActiveRun:  str(obj, "status", "activeRunRef", "name"),
 			Conditions: conditions(obj),
+			Retune:     retuneRefOf(obj),
 		}
 	}
 	for _, entry := range ix.runs {
@@ -407,7 +415,7 @@ func (ix *Index) ListRequests(namespace string) []RequestView {
 		key := keyOf(entry.env.Namespace, request)
 		view, ok := views[key]
 		if !ok {
-			view = &RequestView{Namespace: entry.env.Namespace, Name: request, Model: rv.Model, Mode: rv.Mode}
+			view = &RequestView{Namespace: entry.env.Namespace, Name: request, Model: rv.Model, Mode: rv.Mode, Retune: rv.Retune}
 			views[key] = view
 		}
 		view.Runs = append(view.Runs, rv)

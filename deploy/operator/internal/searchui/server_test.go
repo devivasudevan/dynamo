@@ -104,7 +104,9 @@ func populatedIndex(t *testing.T, store history.Store) *Index {
 	t.Helper()
 	ctx := context.Background()
 	ix := NewIndex(store)
-	ix.UpsertRequest(fixtureRequest())
+	if err := ix.UpsertRequest(ctx, fixtureRequest()); err != nil {
+		t.Fatal(err)
+	}
 	if err := ix.UpsertRun(ctx, fixtureRun(true)); err != nil {
 		t.Fatal(err)
 	}
@@ -146,6 +148,14 @@ func TestIndexViewsAcrossObjectShapes(t *testing.T) {
 	}
 	if len(detail.Samples) != 1 {
 		t.Fatalf("expected one status sample, got %d", len(detail.Samples))
+	}
+}
+
+func TestCandidateViewsAcrossObjectShapes(t *testing.T) {
+	ix := populatedIndex(t, nil)
+	detail, ok := ix.RunDetail("dynamo-system", "pareto-vllm-h100-1")
+	if !ok {
+		t.Fatal("run not found")
 	}
 
 	t.Log("Candidates are ranked by candidateRefs, with the removed one retained as superseded")
@@ -220,7 +230,7 @@ func TestServerEndpointsAndDGDCreation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		var sb strings.Builder
 		buf := make([]byte, 4096)
 		for {
@@ -238,7 +248,7 @@ func TestServerEndpointsAndDGDCreation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		var sb strings.Builder
 		buf := make([]byte, 4096)
 		for {

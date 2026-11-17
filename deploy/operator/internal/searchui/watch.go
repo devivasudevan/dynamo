@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
 	toolscache "k8s.io/client-go/tools/cache"
@@ -18,7 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// Watcher feeds Request, Run and Candidate events into the Index, starts log streaming
+// Watcher feeds Request, Run, Candidate, DGD and retune Lease events into the Index, starts log streaming
 // for Runs with a Job, and notifies browser subscribers.
 type Watcher struct {
 	cache  cache.Cache
@@ -29,7 +30,14 @@ type Watcher struct {
 }
 
 func NewWatcher(restConfig *rest.Config, namespace string, index *Index, logs *LogManager, notify func(), log logr.Logger) (*Watcher, error) {
-	opts := cache.Options{}
+	// Only the planner's retune Leases are cached, not every Lease of the cluster.
+	retuneLeases, err := labels.Parse(labelRetuneDGDUID)
+	if err != nil {
+		return nil, fmt.Errorf("lease selector: %w", err)
+	}
+	lease := &unstructured.Unstructured{}
+	lease.SetGroupVersionKind(gvkLease)
+	opts := cache.Options{ByObject: map[client.Object]cache.ByObject{lease: {Label: retuneLeases}}}
 	if namespace != "" {
 		opts.DefaultNamespaces = map[string]cache.Config{namespace: {}}
 	}
@@ -43,7 +51,9 @@ func NewWatcher(restConfig *rest.Config, namespace string, index *Index, logs *L
 // Start registers the informers, starts the cache and blocks until ctx is done.
 func (w *Watcher) Start(ctx context.Context) error {
 	handlers := map[schema.GroupVersionKind]toolscache.ResourceEventHandler{
-		gvkRequest:   w.requestHandler(),
+		gvkRequest:   w.requestHandler(ctx),
+		gvkDGD:       w.dgdHandler(),
+		gvkLease:     w.leaseHandler(ctx),
 		gvkRun:       w.runHandler(ctx),
 		gvkCandidate: w.candidateHandler(ctx),
 	}
@@ -78,10 +88,52 @@ func asUnstructured(obj any) *unstructured.Unstructured {
 	return u
 }
 
-func (w *Watcher) requestHandler() toolscache.ResourceEventHandler {
+func (w *Watcher) dgdHandler() toolscache.ResourceEventHandler {
 	upsert := func(obj any) {
 		if u := asUnstructured(obj); u != nil {
-			w.index.UpsertRequest(u.DeepCopy().Object)
+			w.index.UpsertDGD(u.DeepCopy().Object)
+			w.notify()
+		}
+	}
+	return toolscache.ResourceEventHandlerFuncs{
+		AddFunc:    upsert,
+		UpdateFunc: func(_, obj any) { upsert(obj) },
+		DeleteFunc: func(obj any) {
+			if u := asUnstructured(obj); u != nil {
+				w.index.DeleteDGD(u.GetNamespace(), u.GetName())
+				w.notify()
+			}
+		},
+	}
+}
+
+func (w *Watcher) leaseHandler(ctx context.Context) toolscache.ResourceEventHandler {
+	upsert := func(obj any) {
+		if u := asUnstructured(obj); u != nil {
+			if err := w.index.UpsertRetuneLease(ctx, u.DeepCopy().Object); err != nil {
+				w.log.Error(err, "record retune decisions", "lease", u.GetName())
+			}
+			w.notify()
+		}
+	}
+	return toolscache.ResourceEventHandlerFuncs{
+		AddFunc:    upsert,
+		UpdateFunc: func(_, obj any) { upsert(obj) },
+		DeleteFunc: func(obj any) {
+			if u := asUnstructured(obj); u != nil {
+				w.index.DeleteRetuneLease(u.Object)
+				w.notify()
+			}
+		},
+	}
+}
+
+func (w *Watcher) requestHandler(ctx context.Context) toolscache.ResourceEventHandler {
+	upsert := func(obj any) {
+		if u := asUnstructured(obj); u != nil {
+			if err := w.index.UpsertRequest(ctx, u.DeepCopy().Object); err != nil {
+				w.log.Error(err, "record retune window", "request", u.GetName())
+			}
 			w.notify()
 		}
 	}

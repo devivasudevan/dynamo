@@ -24,6 +24,17 @@ import (
 // ErrNotFound reports a key that no backend holds.
 var ErrNotFound = errors.New("not found")
 
+// RetuneRef ties a Run to the planner live-retune window that created its Request. The
+// labels live on the Request, which the planner deletes after a few windows, so the
+// reference is stored with the Run.
+type RetuneRef struct {
+	DGD         string `json:"dgd"`
+	DGDUID      string `json:"dgdUID"`
+	WindowEndMs int64  `json:"windowEndMs"`
+	Shard       string `json:"shard"`
+	Attempt     int    `json:"attempt,omitempty"`
+}
+
 // RunEnvelope is the stored form of one DynamoGraphDeploymentRun.
 type RunEnvelope struct {
 	Namespace string         `json:"namespace"`
@@ -32,7 +43,19 @@ type RunEnvelope struct {
 	FirstSeen time.Time      `json:"firstSeen"`
 	LastSeen  time.Time      `json:"lastSeen"`
 	DeletedAt *time.Time     `json:"deletedAt,omitempty"`
+	Retune    *RetuneRef     `json:"retune,omitempty"`
 	Object    map[string]any `json:"object"`
+}
+
+// DecisionEnvelope is one entry of a DynamoGraphDeployment's planner retune history, as
+// the planner wrote it to its state Lease. The Lease keeps the newest 50; the store keeps
+// every entry it observed.
+type DecisionEnvelope struct {
+	Namespace string         `json:"namespace"`
+	DGD       string         `json:"dgd"`
+	DGDUID    string         `json:"dgdUID"`
+	ID        string         `json:"id"`
+	Entry     map[string]any `json:"entry"`
 }
 
 // CandidateEnvelope is the stored form of one DynamoGraphDeploymentCandidate.
@@ -58,11 +81,13 @@ type Store interface {
 	PutRunSample(ctx context.Context, namespace, uid string, sample StatusSample) error
 	PutCandidate(ctx context.Context, env CandidateEnvelope) error
 	PutLog(ctx context.Context, namespace, uid, container string, data []byte) error
+	PutDecision(ctx context.Context, env DecisionEnvelope) error
 
 	ListRuns(ctx context.Context) ([]RunEnvelope, error)
 	ListRunSamples(ctx context.Context, namespace, uid string) ([]StatusSample, error)
 	ListCandidates(ctx context.Context, namespace, uid string) ([]CandidateEnvelope, error)
 	GetLog(ctx context.Context, namespace, uid, container string) ([]byte, error)
+	ListDecisions(ctx context.Context) ([]DecisionEnvelope, error)
 }
 
 // kv is the minimal object interface both backends provide. Keys are '/'-separated
@@ -79,6 +104,7 @@ type kv interface {
 //	runs/{namespace}/{uid}/status/{timestamp}.json
 //	runs/{namespace}/{uid}/candidates/{name}.json
 //	runs/{namespace}/{uid}/logs/{container}.log
+//	retune/{namespace}/{dgdUID}/decisions/{id}.json
 type kvStore struct {
 	kv kv
 }
@@ -197,4 +223,39 @@ func (s *kvStore) ListCandidates(ctx context.Context, namespace, uid string) ([]
 
 func (s *kvStore) GetLog(ctx context.Context, namespace, uid, container string) ([]byte, error) {
 	return s.kv.Get(ctx, path.Join(runKey(namespace, uid), "logs", container+".log"))
+}
+
+func (s *kvStore) PutDecision(ctx context.Context, env DecisionEnvelope) error {
+	if env.Namespace == "" || env.DGDUID == "" || env.ID == "" || strings.ContainsAny(env.ID, "/\\") {
+		return fmt.Errorf("decision envelope needs namespace, dgdUID and a plain id, got %q", env.ID)
+	}
+	data, err := json.Marshal(env)
+	if err != nil {
+		return err
+	}
+	return s.kv.Put(ctx, path.Join("retune", env.Namespace, env.DGDUID, "decisions", env.ID+".json"), data)
+}
+
+func (s *kvStore) ListDecisions(ctx context.Context) ([]DecisionEnvelope, error) {
+	keys, err := s.kv.List(ctx, "retune/")
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(keys)
+	var out []DecisionEnvelope
+	for _, key := range keys {
+		if path.Base(path.Dir(key)) != "decisions" {
+			continue
+		}
+		data, err := s.kv.Get(ctx, key)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", key, err)
+		}
+		var env DecisionEnvelope
+		if err := json.Unmarshal(data, &env); err != nil {
+			return nil, fmt.Errorf("decode %s: %w", key, err)
+		}
+		out = append(out, env)
+	}
+	return out, nil
 }

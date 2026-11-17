@@ -27,6 +27,8 @@ type Index struct {
 	runUIDs    map[types.NamespacedName]string
 	candidates map[types.NamespacedName]*candidateEntry
 	samples    map[string][]history.StatusSample // by run UID
+	dgds       map[types.NamespacedName]map[string]any
+	retunes    map[string]*retuneEntry // by DGD UID
 
 	store history.Store // optional
 	now   func() time.Time
@@ -50,6 +52,8 @@ func NewIndex(store history.Store) *Index {
 		runUIDs:    make(map[types.NamespacedName]string),
 		candidates: make(map[types.NamespacedName]*candidateEntry),
 		samples:    make(map[string][]history.StatusSample),
+		dgds:       make(map[types.NamespacedName]map[string]any),
+		retunes:    make(map[string]*retuneEntry),
 		store:      store,
 		now:        time.Now,
 	}
@@ -64,8 +68,15 @@ func (ix *Index) Load(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list stored runs: %w", err)
 	}
+	decisions, err := ix.store.ListDecisions(ctx)
+	if err != nil {
+		return fmt.Errorf("list stored retune decisions: %w", err)
+	}
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
+	for _, d := range decisions {
+		ix.retuneEntry(d.Namespace, d.DGD, d.DGDUID).decisions[d.ID] = d.Entry
+	}
 	for _, env := range runs {
 		ix.runs[env.UID] = &runEntry{env: env}
 		key := types.NamespacedName{Namespace: env.Namespace, Name: env.Name}
@@ -97,11 +108,34 @@ func stripVolatile(obj map[string]any) map[string]any {
 
 // --- Requests ---
 
-func (ix *Index) UpsertRequest(obj map[string]any) {
+// UpsertRequest records a live Request. A planner retune Request also stamps its window on
+// the Runs it owns that were observed before it.
+func (ix *Index) UpsertRequest(ctx context.Context, obj map[string]any) error {
 	key := types.NamespacedName{Namespace: str(obj, "metadata", "namespace"), Name: str(obj, "metadata", "name")}
+	ref := retuneRefOf(obj)
+
 	ix.mu.Lock()
 	ix.requests[key] = stripVolatile(obj)
+	var stamped []history.RunEnvelope
+	if ref != nil {
+		for _, entry := range ix.runs {
+			if entry.env.Retune == nil && entry.env.Namespace == key.Namespace && runRequestName(entry.env.Object) == key.Name {
+				entry.env.Retune = ref
+				stamped = append(stamped, entry.env)
+			}
+		}
+	}
 	ix.mu.Unlock()
+
+	if ix.store == nil {
+		return nil
+	}
+	for _, env := range stamped {
+		if err := ix.store.PutRun(ctx, env); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (ix *Index) DeleteRequest(namespace, name string) {
@@ -132,6 +166,11 @@ func (ix *Index) UpsertRun(ctx context.Context, obj map[string]any) error {
 	entry.env.DeletedAt = nil
 	entry.live = true
 	ix.runUIDs[key] = uid
+	if entry.env.Retune == nil {
+		if request, ok := ix.requests[types.NamespacedName{Namespace: key.Namespace, Name: runRequestName(obj)}]; ok {
+			entry.env.Retune = retuneRefOf(request)
+		}
+	}
 	var sample *history.StatusSample
 	if statusChanged {
 		sample = &history.StatusSample{Time: now, Status: nestedMap(obj, "status")}
@@ -239,7 +278,7 @@ func (ix *Index) candidatesOfRun(uid string) []*candidateEntry {
 	return out
 }
 
-// Namespaces lists every namespace with a Request or Run, live or retained.
+// Namespaces lists every namespace with a Request, Run or DGD, live or retained.
 func (ix *Index) Namespaces() []string {
 	ix.mu.RLock()
 	defer ix.mu.RUnlock()
@@ -249,6 +288,9 @@ func (ix *Index) Namespaces() []string {
 	}
 	for _, entry := range ix.runs {
 		seen[entry.env.Namespace] = struct{}{}
+	}
+	for key := range ix.dgds {
+		seen[key.Namespace] = struct{}{}
 	}
 	out := make([]string, 0, len(seen))
 	for ns := range seen {

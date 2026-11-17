@@ -4,9 +4,11 @@
   (dict "apiGroups" (list "nvidia.com") "resources" (list "dynamographdeploymentrequests" "dynamographdeploymentruns" "dynamographdeploymentcandidates") "verbs" (list "get" "list" "watch"))
   (dict "apiGroups" (list "") "resources" (list "pods") "verbs" (list "get" "list" "watch"))
   (dict "apiGroups" (list "") "resources" (list "pods/log") "verbs" (list "get"))
+  (dict "apiGroups" (list "nvidia.com") "resources" (list "dynamographdeployments") "verbs" (list "get" "list" "watch"))
+  (dict "apiGroups" (list "coordination.k8s.io") "resources" (list "leases") "verbs" (list "get" "list" "watch"))
 }}
 {{- if .Values.dgdCreate.enabled }}
-{{- $rules = append $rules (dict "apiGroups" (list "nvidia.com") "resources" (list "dynamographdeployments") "verbs" (list "get" "create")) }}
+{{- $rules = append $rules (dict "apiGroups" (list "nvidia.com") "resources" (list "dynamographdeployments") "verbs" (list "create")) }}
 {{- end }}
 {{- if .Values.watchNamespace }}
 apiVersion: rbac.authorization.k8s.io/v1

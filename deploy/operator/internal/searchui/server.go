@@ -4,8 +4,9 @@
  */
 
 // Package searchui implements the Dynamo Search UI: a read-only browser view of
-// DynamoGraphDeploymentRequest, Run and Candidate resources with UI-local history, plus one
-// separately authorized action that creates an independent DGD from a Candidate.
+// DynamoGraphDeploymentRequest, Run and Candidate resources with UI-local history, of
+// every DynamoGraphDeployment and its planner retune windows, plus one separately
+// authorized action that creates an independent DGD from a Candidate.
 package searchui
 
 import (
@@ -16,6 +17,7 @@ import (
 	"io/fs"
 	"net/http"
 	"slices"
+	"strconv"
 	"sync"
 
 	"github.com/ai-dynamo/dynamo/deploy/operator/internal/searchui/history"
@@ -45,6 +47,9 @@ func NewServer(index *Index, logs *LogManager, cl client.Client) *Server {
 	mux.HandleFunc("GET /api/v1/runs/{ns}/{name}/logs", s.handleLogs)
 	mux.HandleFunc("GET /api/v1/runs/{ns}/{name}/logs/stream", s.handleLogStream)
 	mux.HandleFunc("GET /api/v1/candidates/{ns}/{name}", s.handleCandidateDetail)
+	mux.HandleFunc("GET /api/v1/deployments", s.handleDeployments)
+	mux.HandleFunc("GET /api/v1/deployments/{ns}/{name}", s.handleDeploymentDetail)
+	mux.HandleFunc("GET /api/v1/deployments/{ns}/{name}/windows/{window}", s.handleWindowDetail)
 	mux.HandleFunc("GET /api/v1/events", s.handleEvents)
 	mux.HandleFunc("POST /api/v1/dgd", s.handleCreateDGD)
 	static, err := fs.Sub(staticFS, "static")
@@ -99,6 +104,33 @@ func (s *Server) handleCandidateDetail(w http.ResponseWriter, r *http.Request) {
 	detail, ok := s.index.CandidateDetail(r.PathValue("ns"), r.PathValue("name"))
 	if !ok {
 		http.Error(w, "candidate not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, detail)
+}
+
+func (s *Server) handleDeployments(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, s.index.ListDeployments(r.URL.Query().Get("namespace")))
+}
+
+func (s *Server) handleDeploymentDetail(w http.ResponseWriter, r *http.Request) {
+	detail, ok := s.index.DeploymentDetail(r.PathValue("ns"), r.PathValue("name"))
+	if !ok {
+		http.Error(w, "deployment not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, detail)
+}
+
+func (s *Server) handleWindowDetail(w http.ResponseWriter, r *http.Request) {
+	window, err := strconv.ParseInt(r.PathValue("window"), 10, 64)
+	if err != nil {
+		http.Error(w, "window must be its end time in epoch milliseconds", http.StatusBadRequest)
+		return
+	}
+	detail, ok := s.index.WindowDetail(r.PathValue("ns"), r.PathValue("name"), window)
+	if !ok {
+		http.Error(w, "retune window not found", http.StatusNotFound)
 		return
 	}
 	writeJSON(w, detail)
